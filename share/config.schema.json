@@ -98,6 +98,22 @@
       "default": null,
       "description": "Language code for transcription (null = auto-detect, or 'en', 'nl', 'fr', etc.)"
     },
+    "custom_vocabulary": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Terms to include in the transcription prompt for better recognition"
+    },
+    "banned_words": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Words or phrases to remove from transcription output"
+    },
     "word_overrides": {
       "type": "object",
       "additionalProperties": {
@@ -146,10 +162,31 @@
       "description": "Seconds to wait before clearing clipboard (only used if clipboard_behavior is true)"
     },
     "paste_mode": {
-      "type": "string",
-      "enum": ["super", "ctrl_shift", "ctrl"],
-      "default": "ctrl_shift",
-      "description": "Paste key combination: 'ctrl_shift' (Ctrl+Shift+V), 'super' (Super+V), 'ctrl' (Ctrl+V)"
+      "type": ["string", "null"],
+      "enum": ["super", "ctrl_shift", "ctrl", "alt", null],
+      "default": null,
+      "description": "Paste key combination. null = auto-detect: terminals get Ctrl+Shift+V, other apps get Ctrl+V."
+    },
+    "paste_trigger_release_delay": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "default": 0.35,
+      "description": "Seconds to wait before pasting so the physical shortcut modifiers can be released."
+    },
+    "paste_clipboard_sync_delay": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "default": 0.12,
+      "description": "Seconds to wait after setting the clipboard before sending the paste shortcut."
+    },
+    "paste_kitty_clipboard_sync_delay": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "default": 0.25,
+      "description": "Clipboard sync delay used for Kitty-protocol terminals."
     },
     "paste_keycode_wev": {
       "type": ["integer", "null"],
@@ -162,9 +199,9 @@
       "description": "Linux evdev keycode for the paste key. Default 47 = KEY_V (QWERTY). Set to the keycode for the physical key that produces 'v' on your layout."
     },
     "shift_paste": {
-      "type": "boolean",
-      "default": true,
-      "description": "Back-compat: true = Ctrl+Shift+V, false = Ctrl+V. Only used if paste_mode is absent."
+      "type": ["boolean", "null"],
+      "default": null,
+      "description": "Back-compat: true = Ctrl+Shift+V, false = Ctrl+V. Only used when paste_mode is null."
     },
     "transcription_backend": {
       "type": "string",
@@ -225,6 +262,18 @@
       "type": ["string", "null"],
       "default": null,
       "description": "Explicit WebSocket URL (auto-derived from provider if null)"
+    },
+    "realtime_transcription_model": {
+      "type": "string",
+      "enum": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-mini-transcribe-2025-12-15", "gpt-4o-transcribe", "gpt-4o-transcribe-latest"],
+      "default": "gpt-4o-mini-transcribe",
+      "description": "ASR model used inside OpenAI realtime transcription sessions"
+    },
+    "realtime_noise_reduction": {
+      "type": ["string", "null"],
+      "enum": ["near_field", "far_field", null],
+      "default": "near_field",
+      "description": "OpenAI realtime input noise reduction mode"
     },
     "realtime_timeout": {
       "type": "integer",

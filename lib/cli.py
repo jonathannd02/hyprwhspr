@@ -37,6 +37,7 @@ from cli_commands import (
     keyboard_command,
     record_command,
     record_capture_command,
+    words_command,
 )
 
 
@@ -174,6 +175,11 @@ def main():
     record_capture_parser.add_argument('--lang', dest='language', metavar='CODE',
                                        help='Language code for transcription (e.g., en, it, de)')
     record_subparsers.add_parser('status', help='Show current recording status')
+
+    # words command
+    words_parser = subparsers.add_parser('words', help='Review transcribed words with fuzzel/rofi')
+    words_subparsers = words_parser.add_subparsers(dest='words_action', help='Word actions')
+    words_subparsers.add_parser('review', help='Review the latest transcription in a picker')
     
     # backend command
     backend_parser = subparsers.add_parser('backend', help='Backend management')
@@ -309,6 +315,11 @@ def main():
                 record_capture_command(language=getattr(args, 'language', None))
             else:
                 record_command(args.record_action, language=getattr(args, 'language', None))
+        elif args.command == 'words':
+            if not args.words_action:
+                words_parser.print_help()
+                sys.exit(1)
+            words_command(args.words_action)
         elif args.command == 'uninstall':
             uninstall_command(
                 keep_models=getattr(args, 'keep_models', False),
@@ -326,4 +337,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

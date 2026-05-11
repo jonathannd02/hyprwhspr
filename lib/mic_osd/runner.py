@@ -129,16 +129,23 @@ sys.exit(main())
 """
 
         # Set LD_PRELOAD for gtk4-layer-shell.
-        # Search common library paths including lib64 (Fedora/RHEL) and versioned
-        # .so files (distros that only ship the unversioned symlink in -devel).
+        # Search common library paths including lib64 (Fedora/RHEL), versioned
+        # .so files (distros that only ship the unversioned symlink in -devel),
+        # and Debian/Ubuntu multiarch paths (e.g. /usr/lib/x86_64-linux-gnu/).
+        import sysconfig
         env = os.environ.copy()
         lib_path = None
-        for pattern in [
+        multiarch = sysconfig.get_config_var('MULTIARCH')
+        patterns = [
             '/usr/lib64/libgtk4-layer-shell.so*',
             '/usr/lib/libgtk4-layer-shell.so*',
             '/usr/local/lib64/libgtk4-layer-shell.so*',
             '/usr/local/lib/libgtk4-layer-shell.so*',
-        ]:
+        ]
+        if multiarch:
+            patterns.insert(0, f'/usr/local/lib/{multiarch}/libgtk4-layer-shell.so*')
+            patterns.insert(1, f'/usr/lib/{multiarch}/libgtk4-layer-shell.so*')
+        for pattern in patterns:
             for candidate in sorted(glob.glob(pattern)):
                 resolved = os.path.realpath(candidate)
                 if os.path.isfile(resolved):

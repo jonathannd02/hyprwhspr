@@ -10,6 +10,7 @@ import subprocess
 import getpass
 import shutil
 import socket
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -38,9 +39,9 @@ except ImportError:
     from config_manager import ConfigManager
 
 try:
-    from .paths import CONFIG_DIR, CONFIG_FILE, RECORDING_CONTROL_FILE, SOCKET_FILE, RECORDING_STATUS_FILE, MODEL_UNLOADED_FILE
+    from .paths import CONFIG_DIR, CONFIG_FILE, RECORDING_CONTROL_FILE, SOCKET_FILE, RECORDING_STATUS_FILE, MODEL_UNLOADED_FILE, LAST_TRANSCRIPTION_FILE
 except ImportError:
-    from paths import CONFIG_DIR, CONFIG_FILE, RECORDING_CONTROL_FILE, SOCKET_FILE, RECORDING_STATUS_FILE, MODEL_UNLOADED_FILE
+    from paths import CONFIG_DIR, CONFIG_FILE, RECORDING_CONTROL_FILE, SOCKET_FILE, RECORDING_STATUS_FILE, MODEL_UNLOADED_FILE, LAST_TRANSCRIPTION_FILE
 
 try:
     from .backend_utils import BACKEND_DISPLAY_NAMES, normalize_backend
@@ -315,6 +316,22 @@ def _check_ydotool_version() -> tuple[bool, str, str]:
             match = re.search(r'(\d+\.\d+\.?\d*)', version_output)
             if match:
                 version = match.group(1)
+        except Exception:
+            pass
+
+    # ydotool 1.0.x Debian builds may not report a version, but their help
+    # output documents YDOTOOL_SOCKET support. The old 0.1.x build does not.
+    if not version:
+        try:
+            result = subprocess.run(
+                ['ydotool', '--help'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            help_output = result.stdout + result.stderr
+            if "YDOTOOL_SOCKET" in help_output:
+                version = "1.0.0"
         except Exception:
             pass
 
@@ -2531,6 +2548,222 @@ def configure_secondary_shortcut():
     print("  systemctl --user restart hyprwhspr")
 
 
+
+def words_command(action: str):
+    """Handle word learning subcommands"""
+    if action == 'review':
+        review_last_transcription_words()
+    else:
+        log_error(f"Unknown words action: {action}")
+
+
+def _notify_words_review(message: str):
+    """Show word-review errors when launched from a compositor binding."""
+    if not shutil.which('notify-send'):
+        return
+    try:
+        subprocess.run(['notify-send', 'hyprwhspr word review', message], timeout=2, check=False)
+    except Exception:
+        pass
+
+
+def _load_last_transcription() -> Optional[dict]:
+    """Load the last persisted transcription."""
+    if not LAST_TRANSCRIPTION_FILE.exists():
+        log_error("No saved transcription found yet. Record something first.")
+        _notify_words_review("No saved transcription found yet. Record something first.")
+        return None
+
+    try:
+        with open(LAST_TRANSCRIPTION_FILE, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        log_error(f"Failed to read last transcription: {e}")
+        _notify_words_review(f"Failed to read last transcription: {e}")
+        return None
+
+    text = payload.get('text') if isinstance(payload, dict) else None
+    if not text or not str(text).strip():
+        log_error("Last transcription is empty.")
+        _notify_words_review("Last transcription is empty.")
+        return None
+
+    payload['text'] = str(text).strip()
+    return payload
+
+
+def _extract_transcription_terms(text: str) -> list[str]:
+    """Extract unique word and phrase candidates from a transcription in spoken order."""
+    words = []
+    for match in re.finditer(r"(?u)\b[\w][\w'-]*\b", text):
+        term = match.group(0).strip("_'-")
+        if term and any(ch.isalpha() for ch in term):
+            words.append(term)
+
+    terms = []
+    seen = set()
+
+    def add_term(term: str):
+        term = term.strip()
+        if not term:
+            return
+        key = term.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        terms.append(term)
+
+    max_phrase_words = 4
+    for index in range(len(words)):
+        max_size = min(max_phrase_words, len(words) - index)
+        for size in range(1, max_size + 1):
+            add_term(' '.join(words[index:index + size]))
+
+    return terms
+
+
+def _run_word_picker(options: list[str], prompt: str, message: Optional[str] = None) -> Optional[str]:
+    """Run a lightweight dmenu-compatible picker for word review."""
+    if shutil.which('fuzzel'):
+        return _run_fuzzel_command(options, prompt)
+
+    if shutil.which('rofi'):
+        return _run_rofi_command(options, prompt)
+
+    message = message or 'No dmenu-compatible picker found. Install fuzzel or rofi.'
+    log_error(message)
+    _notify_words_review(message)
+    return None
+
+
+def _run_fuzzel_command(options: list[str], prompt: str) -> Optional[str]:
+    """Run fuzzel in dmenu mode."""
+    if not shutil.which('fuzzel'):
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                'fuzzel',
+                '--dmenu',
+                '--prompt',
+                f'{prompt}> ',
+                '--lines',
+                '16',
+                '--width',
+                '72',
+            ],
+            input='\n'.join(options),
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        log_warning("fuzzel word review timed out")
+        return None
+    except Exception as e:
+        log_error(f"Failed to run fuzzel: {e}")
+        _notify_words_review(f"Failed to run fuzzel: {e}")
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    selected = result.stdout.strip()
+    return selected or None
+
+
+def _run_rofi_command(options: list[str], prompt: str) -> Optional[str]:
+    """Run rofi in dmenu mode as a fallback."""
+    if not shutil.which('rofi'):
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                'rofi',
+                '-dmenu',
+                '-p',
+                prompt,
+            ],
+            input='\n'.join(options),
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        log_warning("rofi word review timed out")
+        return None
+    except Exception as e:
+        log_error(f"Failed to run rofi: {e}")
+        _notify_words_review(f"Failed to run rofi: {e}")
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    selected = result.stdout.strip()
+    return selected or None
+
+
+def _run_word_input(prompt: str, message: Optional[str] = None) -> Optional[str]:
+    """Run a free-form picker input prompt."""
+    return _run_word_picker([], prompt, message=message)
+
+
+def review_last_transcription_words():
+    """Open a picker to ban/correct/add vocabulary from the latest transcription."""
+    payload = _load_last_transcription()
+    if not payload:
+        return
+
+    text = payload['text']
+    terms = _extract_transcription_terms(text)
+    custom_option = '[custom] Type a word or phrase'
+    message = 'Type to filter or enter a custom phrase'
+
+    selected_term = _run_word_picker(terms + [custom_option], 'Review word', message=message)
+    if not selected_term:
+        return
+
+    if selected_term == custom_option:
+        selected_term = _run_word_input('Word or phrase', message=message)
+        if not selected_term:
+            return
+
+    selected_term = selected_term.strip()
+    selected_action = _run_word_picker(
+        [f'Ban: {selected_term}', f'Correct: {selected_term}', f'Add vocabulary: {selected_term}'],
+        'Word action',
+        message=message,
+    )
+    if not selected_action:
+        return
+
+    config = ConfigManager()
+    if selected_action.startswith('Ban:'):
+        config.add_banned_word(selected_term)
+        if config.save_config():
+            log_success(f"Banned word/phrase: {selected_term}")
+        return
+
+    if selected_action.startswith('Correct:'):
+        replacement = _run_word_input(
+            f'Replace {selected_term}',
+            message='Type the correct word/phrase',
+        )
+        if not replacement:
+            return
+        config.add_word_override(selected_term, replacement)
+        if config.save_config():
+            log_success(f"Added correction: {selected_term} -> {replacement}")
+        return
+
+    if selected_action.startswith('Add vocabulary:'):
+        config.add_custom_vocabulary(selected_term)
+        if config.save_config():
+            log_success(f"Added vocabulary term: {selected_term}")
+
 # ==================== Systemd Commands ====================
 
 def systemd_command(action: str):
@@ -2902,9 +3135,17 @@ def waybar_status():
     
     try:
         config = _load_jsonc(waybar_config)
-        
-        has_module = 'custom/hyprwhspr' in config.get('modules-right', [])
-        has_include = str(user_module_config) in config.get('include', [])
+
+        if isinstance(config, dict):
+            bars = [config]
+        elif isinstance(config, list):
+            bars = [bar for bar in config if isinstance(bar, dict)]
+        else:
+            log_error("Waybar config root must be an object or a list of objects")
+            return False
+
+        has_module = any('custom/hyprwhspr' in bar.get('modules-right', []) for bar in bars)
+        has_include = any(str(user_module_config) in bar.get('include', []) for bar in bars)
         has_module_file = user_module_config.exists()
         
         if has_module and has_include and has_module_file:

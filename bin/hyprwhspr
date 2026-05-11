@@ -62,26 +62,47 @@ else
     PYTHON_CMD="$CLI_PYTHON"
 fi
 
-# Help/version handling: route -h/--help/--version to CLI
+# Help/version handling for top-level invocations. Subcommand help, such as
+# `hyprwhspr record --help`, is routed by the subcommand dispatch below.
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  exec "$CLI_PYTHON" "$LIB_DIR/cli.py" --help
+fi
+if [[ "$1" == "--version" ]]; then
+  exec "$CLI_PYTHON" "$LIB_DIR/cli.py" --version
+fi
+
+CLI_COMMAND=""
+SKIP_NEXT_ARG=false
 for arg in "$@"; do
-  if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
-    exec "$CLI_PYTHON" "$LIB_DIR/cli.py" --help
+  if [[ "$SKIP_NEXT_ARG" == true ]]; then
+    SKIP_NEXT_ARG=false
+    continue
   fi
-  if [[ "$arg" == "--version" ]]; then
-    exec "$CLI_PYTHON" "$LIB_DIR/cli.py" --version
-  fi
+  case "$arg" in
+    --log-file)
+      SKIP_NEXT_ARG=true
+      ;;
+    -q|--quiet|-v|--verbose|--debug|--no-progress)
+      ;;
+    -*)
+      ;;
+    *)
+      CLI_COMMAND="$arg"
+      break
+      ;;
+  esac
 done
 
-if [[ "$1" == "help" ]]; then
+if [[ "$CLI_COMMAND" == "help" ]]; then
   exec "$CLI_PYTHON" "$LIB_DIR/cli.py" --help
 fi
 
 # Subcommands: route to CLI if recognized
 # 'test' needs venv Python since it loads the transcription backend
-if [[ "$1" == "test" ]]; then
+if [[ "$CLI_COMMAND" == "test" ]]; then
   exec "$PYTHON_CMD" "$LIB_DIR/cli.py" "$@"
 fi
-if [[ "$1" =~ ^(setup|install|config|waybar|systemd|status|model|validate|uninstall|backend|state|mic-osd|keyboard|record)$ ]]; then
+if [[ "$CLI_COMMAND" =~ ^(setup|install|config|waybar|systemd|status|model|validate|uninstall|backend|state|mic-osd|keyboard|record|words)$ ]]; then
   exec "$CLI_PYTHON" "$LIB_DIR/cli.py" "$@"
 fi
 

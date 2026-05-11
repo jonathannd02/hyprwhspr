@@ -763,6 +763,37 @@ Quiet system volume on record:
 
 ## Text processing
 
+### Just-in-time word review
+
+hyprwhspr stores the latest raw transcription so you can quickly teach it after a bad result:
+
+```bash
+hyprwhspr words review
+```
+
+The review UI uses `fuzzel --dmenu`, with `rofi -dmenu` as a fallback. It lists single words and short phrases, so corrections like `open coat` -> `OpenCode` are selectable.
+
+Niri binding:
+
+```kdl
+Alt+W allow-inhibiting=false { spawn "/home/jonathan_nd/.local/bin/hyprwhspr" "words" "review"; }
+```
+
+The menu can add a selected word/phrase as banned, corrected, or preferred vocabulary.
+
+### Custom vocabulary and banned words
+
+Use `custom_vocabulary` to bias supported transcription backends toward difficult terms. Use `banned_words` to remove words or phrases that are commonly hallucinated.
+
+```jsonc
+{
+    "custom_vocabulary": ["HyperWhisper", "Hyprland", "OpenCode"],
+    "banned_words": ["hallucinatedword", "random phrase"]
+}
+```
+
+`custom_vocabulary` is appended to the backend prompt. `banned_words` is applied before text injection.
+
 ### Word overrides
 
 Customize transcriptions:
@@ -946,6 +977,22 @@ Two environment variables are exported to the hook:
 The hook runs under a 5-second timeout. On timeout, non-zero exit, or any subprocess error, the original text is preserved — a broken hook will never silently eat a dictation. Errors are logged to the service journal.
 
 Note: the command runs under `shell=True`, so pipes, redirects, and command chaining work as expected. Treat `post_transcription_hook` as trusted config (same threat model as the rest of `config.json`).
+
+### Paste latency tuning
+
+For low-latency local dictation, the clipboard paste path exposes the small
+settling delays used after transcription returns:
+
+```jsonc
+{
+    "paste_trigger_release_delay": 0.08,       // wait for physical shortcut keys to be released
+    "paste_clipboard_sync_delay": 0.03,        // wait after wl-copy before paste
+    "paste_kitty_clipboard_sync_delay": 0.12   // safer delay for Kitty-protocol terminals
+}
+```
+
+Lower values paste faster, but going too low can race with still-held shortcut
+modifiers or a clipboard that has not propagated yet.
 
 ## Integrations
 

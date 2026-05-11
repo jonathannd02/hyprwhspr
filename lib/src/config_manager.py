@@ -70,6 +70,8 @@ class ConfigManager:
             'audio_device_model_id': None,  # USB model ID (most stable, from udev)
             'model': 'base',
             'language': None,       # Language code for transcription (None = auto-detect, or 'en', 'nl', 'fr', etc.)
+            'custom_vocabulary': [],  # Terms to include in the transcription prompt for better recognition
+            'banned_words': [],  # Words or phrases to remove from transcription output
             'word_overrides': {},  # Dictionary of word replacements: {"original": "replacement"}
             'filter_filler_words': False,  # Remove common filler words (uh, um, er, etc.)
             'filler_words': ['uh', 'um', 'er', 'ah', 'eh', 'hmm', 'hm', 'mm', 'mhm'],  # Filler words to remove
@@ -85,6 +87,11 @@ class ConfigManager:
             # Values: "super" | "ctrl_shift" | "ctrl" | null (auto-detect)
             # null = auto-detect: terminals get Ctrl+Shift+V, other apps get Ctrl+V
             'paste_mode': None,
+            # Latency tuning for clipboard + paste injection. The defaults keep
+            # enough settling time for common Wayland clipboard and hotkey races.
+            'paste_trigger_release_delay': 0.35,
+            'paste_clipboard_sync_delay': 0.12,
+            'paste_kitty_clipboard_sync_delay': 0.25,
             # Wayland/XKB keycode as printed by `wev` for the key that types 'v'.
             # If set, hyprwhspr will convert it to Linux evdev by subtracting 8.
             # This avoids users having to do the math themselves.
@@ -113,6 +120,8 @@ class ConfigManager:
             'websocket_provider': None,        # Provider identifier for credential lookup (e.g., 'openai', 'google', 'elevenlabs')
             'websocket_model': None,           # Model identifier (e.g., 'gpt-realtime-mini-2025-12-15')
             'websocket_url': None,             # Optional: explicit WebSocket URL (auto-derived if None)
+            'realtime_transcription_model': 'gpt-4o-mini-transcribe',  # ASR model inside OpenAI transcription sessions
+            'realtime_noise_reduction': 'near_field',  # near_field | far_field | None
             'realtime_timeout': 30,            # Completion timeout (seconds)
             'realtime_buffer_max_seconds': 5,  # Max buffer before dropping chunks
             'realtime_mode': 'transcribe',      # 'transcribe' (speech-to-text) or 'converse' (voice-to-AI)
@@ -279,6 +288,40 @@ class ConfigManager:
     def get_all_settings(self) -> Dict[str, Any]:
         """Get all configuration settings"""
         return self.config.copy()
+
+    def refresh_word_learning_config(self):
+        """Refresh word-learning settings without changing backend state."""
+        try:
+            if not self.config_file.exists():
+                return
+
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                loaded_config = json.load(f)
+
+            loaded_config.pop('$schema', None)
+            keys = {
+                'custom_vocabulary',
+                'banned_words',
+                'word_overrides',
+                'filter_filler_words',
+                'filler_words',
+                'symbol_replacements',
+                'whisper_prompt',
+            }
+            for key in keys:
+                if key in loaded_config:
+                    self.config[key] = loaded_config[key]
+                elif key in self.default_config:
+                    self.config[key] = copy.deepcopy(self.default_config[key])
+
+            for key in list(self.config.keys()):
+                if key.startswith('whisper_prompt_'):
+                    self.config.pop(key, None)
+            for key, value in loaded_config.items():
+                if key.startswith('whisper_prompt_'):
+                    self.config[key] = value
+        except Exception as e:
+            print(f"Warning: Could not refresh word learning config: {e}")
     
     def reset_to_defaults(self):
         """Reset configuration to default values"""
@@ -294,6 +337,50 @@ class ConfigManager:
     def get_word_overrides(self) -> Dict[str, str]:
         """Get the word overrides dictionary"""
         return self.config.get('word_overrides', {}).copy()
+
+    def get_custom_vocabulary(self) -> list:
+        """Get the custom vocabulary list"""
+        vocabulary = self.config.get('custom_vocabulary', [])
+        return vocabulary.copy() if isinstance(vocabulary, list) else []
+
+    def add_custom_vocabulary(self, term: str):
+        """Add a term to the custom vocabulary list"""
+        term = term.strip()
+        if not term:
+            return
+        vocabulary = self.get_custom_vocabulary()
+        if term.lower() not in {existing.lower() for existing in vocabulary}:
+            vocabulary.append(term)
+            self.config['custom_vocabulary'] = vocabulary
+
+    def remove_custom_vocabulary(self, term: str):
+        """Remove a term from the custom vocabulary list"""
+        term = term.strip().lower()
+        self.config['custom_vocabulary'] = [
+            existing for existing in self.get_custom_vocabulary() if existing.lower() != term
+        ]
+
+    def get_banned_words(self) -> list:
+        """Get the list of banned words/phrases"""
+        banned_words = self.config.get('banned_words', [])
+        return banned_words.copy() if isinstance(banned_words, list) else []
+
+    def add_banned_word(self, word: str):
+        """Add a word or phrase to the banned words list"""
+        word = word.strip()
+        if not word:
+            return
+        banned_words = self.get_banned_words()
+        if word.lower() not in {existing.lower() for existing in banned_words}:
+            banned_words.append(word)
+            self.config['banned_words'] = banned_words
+
+    def remove_banned_word(self, word: str):
+        """Remove a word or phrase from the banned words list"""
+        word = word.strip().lower()
+        self.config['banned_words'] = [
+            existing for existing in self.get_banned_words() if existing.lower() != word
+        ]
     
     def add_word_override(self, original: str, replacement: str):
         """Add or update a word override"""

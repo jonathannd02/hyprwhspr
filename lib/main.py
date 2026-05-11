@@ -8,6 +8,7 @@ import time
 import threading
 import os
 import socket
+import json
 import fcntl
 import atexit
 import subprocess
@@ -68,7 +69,7 @@ from device_monitor import DeviceMonitor, PYUDEV_AVAILABLE
 from paths import (
     RECORDING_STATUS_FILE, RECORDING_CONTROL_FILE, AUDIO_LEVEL_FILE, RECOVERY_REQUESTED_FILE,
     RECOVERY_RESULT_FILE, MIC_ZERO_VOLUME_FILE, LOCK_FILE, LONGFORM_STATE_FILE, LONGFORM_SEGMENTS_DIR,
-    MODEL_UNLOADED_FILE, SOCKET_FILE
+    MODEL_UNLOADED_FILE, SOCKET_FILE, LAST_TRANSCRIPTION_FILE,
 )
 from backend_utils import normalize_backend
 from segment_manager import SegmentManager
@@ -1037,6 +1038,7 @@ class hyprwhsprApp:
                     return
 
                 # Success - inject text
+                self._write_last_transcription(text, language_override=self._longform_language_override, source='long_form')
                 self._inject_text(text)
 
                 # Clear segments, error audio, and language override
@@ -1535,6 +1537,7 @@ class hyprwhsprApp:
                     return
 
                 self.current_transcription = text
+                self._write_last_transcription(text, language_override=self._current_language_override, source='recording')
 
                 # Inject text
                 self._inject_text(self.current_transcription)
@@ -1580,6 +1583,21 @@ class hyprwhsprApp:
                 pass
         except Exception as e:
             print(f"[ERROR] Text injection failed: {e}", flush=True)
+
+    def _write_last_transcription(self, text, language_override=None, source='recording'):
+        """Persist the latest raw transcription for just-in-time word review."""
+        try:
+            language = language_override if language_override is not None else self.config.get_setting('language', None)
+            payload = {
+                'text': text,
+                'timestamp': time.time(),
+                'language': language,
+                'source': source,
+            }
+            LAST_TRANSCRIPTION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LAST_TRANSCRIPTION_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        except Exception as e:
+            print(f"[WARN] Failed to save last transcription: {e}", flush=True)
 
     def _is_zero_volume(self, audio_data) -> bool:
         """Check if audio data has zero or near-zero volume"""

@@ -46,6 +46,8 @@ class RealtimeClient:
         self.instructions = None
         self.mode = mode
         self.language = None  # Language code for transcription (None = auto-detect)
+        self.transcription_model = 'gpt-4o-mini-transcribe'
+        self.noise_reduction = 'near_field'
 
         # Threading
         self.lock = threading.Lock()
@@ -95,6 +97,21 @@ class RealtimeClient:
         # Track if buffer was committed (by VAD or manual)
         # Prevents double-commit error when VAD auto-commits on speech end
         self._buffer_committed = False
+        self._recording_id = 0
+        self._active_recording_id = 0
+
+    def _reset_transcript_state_locked(self, next_recording: bool = False):
+        """Clear local transcript state so old realtime segments cannot leak into the next paste."""
+        self.current_response_text = ""
+        self.response_complete = False
+        self._transcript_generation = 0
+        self._committed_segments = []
+        self._audio_activity_id = 0
+        self._last_transcript_audio_activity_id = 0
+        self._buffer_committed = False
+        if next_recording:
+            self._recording_id += 1
+            self._active_recording_id = self._recording_id
 
     def _start_sender_thread(self):
         """Start background sender thread (once)."""
@@ -355,6 +372,7 @@ class RealtimeClient:
             transcript = event.get('transcript', '') or ''
             transcript = transcript.strip()
             with self.lock:
+                event_recording_id = self._active_recording_id
                 if transcript:
                     self._committed_segments.append(transcript)
                 self._transcript_generation += 1
@@ -364,7 +382,7 @@ class RealtimeClient:
                 self.response_complete = True
             self.response_event.set()
             print(
-                f'[REALTIME] Transcription completed ({len(transcript)} chars)',
+                f'[REALTIME] Transcription completed ({len(transcript)} chars, recording={event_recording_id})',
                 flush=True,
             )
         
@@ -397,9 +415,11 @@ class RealtimeClient:
         if self.mode == 'transcribe':
             # Transcription-only session
             # Build transcription config - omit language for auto-detect
-            transcription_config = {'model': 'gpt-4o-mini-transcribe'}
+            transcription_config = {'model': self.transcription_model or 'gpt-4o-mini-transcribe'}
             if self.language:
                 transcription_config['language'] = self.language
+            if self.instructions:
+                transcription_config['prompt'] = self.instructions
 
             session_data = {
                 'type': 'transcription',
@@ -410,6 +430,11 @@ class RealtimeClient:
                             'rate': 24000
                         },
                         'transcription': transcription_config,
+                        'noise_reduction': (
+                            {'type': self.noise_reduction}
+                            if self.noise_reduction in ('near_field', 'far_field')
+                            else None
+                        ),
                         'turn_detection': {
                             'type': 'server_vad',
                             'threshold': 0.5,
@@ -497,14 +522,8 @@ class RealtimeClient:
             with self.lock:
                 self._audio_queue.clear()
                 self.audio_buffer_seconds = 0.0
-                self._buffer_committed = False  # Reset commit tracking for new recording
-                # Clear old transcription state to prevent returning stale results
-                self.current_response_text = ""
-                self.response_complete = False
-                self._transcript_generation = 0
-                self._committed_segments = []
-                self._audio_activity_id = 0
-                self._last_transcript_audio_activity_id = 0
+                # Clear old transcription state to prevent returning stale results.
+                self._reset_transcript_state_locked(next_recording=True)
                 self._dropped_chunks = 0
                 self._last_drop_log_time = 0.0
                 self._queue_cond.notify_all()
@@ -577,6 +596,8 @@ class RealtimeClient:
 
         try:
             with self.lock:
+                requested_recording_id = self._active_recording_id
+
                 def _full_committed_text_locked() -> str:
                     parts = [p for p in self._committed_segments if p]
                     return ' '.join(parts).strip()
@@ -596,15 +617,12 @@ class RealtimeClient:
                     and existing_transcript
                     and (not has_new_audio_since_transcript)
                     and (not has_queued_audio)
+                    and requested_recording_id == self._active_recording_id
                 ):
                     result = existing_transcript
-                    self._committed_segments = []
-                    self._transcript_generation = 0
-                    self.current_response_text = ""
-                    self.response_complete = False
+                    self._reset_transcript_state_locked()
                     self.response_event.clear()
                     self.audio_buffer_seconds = 0.0
-                    self._buffer_committed = False
                     print(
                         f'[REALTIME] Using existing transcript ({len(result)} chars)',
                         flush=True,
@@ -671,6 +689,9 @@ class RealtimeClient:
                         break
 
                     with self.lock:
+                        if requested_recording_id != self._active_recording_id:
+                            print('[REALTIME] Recording changed while waiting; ignoring stale transcript', flush=True)
+                            return ""
                         if self._transcript_generation > best_generation:
                             best_generation = self._transcript_generation
                             best_text = _full_committed_text_locked()
@@ -683,6 +704,9 @@ class RealtimeClient:
                         if not self.response_event.wait(timeout=settle_remaining):
                             break
                         with self.lock:
+                            if requested_recording_id != self._active_recording_id:
+                                print('[REALTIME] Recording changed while settling; ignoring stale transcript', flush=True)
+                                return ""
                             if self._transcript_generation > best_generation:
                                 best_generation = self._transcript_generation
                                 best_text = _full_committed_text_locked()
@@ -690,8 +714,7 @@ class RealtimeClient:
 
                     result = (best_text or "").strip()
                     with self.lock:
-                        self._committed_segments = []
-                        self._transcript_generation = 0
+                        self._reset_transcript_state_locked()
                         self.audio_buffer_seconds = 0.0
                     print(
                         f'[REALTIME] Transcript received ({len(result)} chars)',
@@ -702,8 +725,7 @@ class RealtimeClient:
                 print(f'[REALTIME] Timeout waiting for transcript ({timeout}s)', flush=True)
                 with self.lock:
                     fallback = _full_committed_text_locked()
-                    self._committed_segments = []
-                    self._transcript_generation = 0
+                    self._reset_transcript_state_locked()
                 return (fallback or "").strip()
 
             # converse mode: legacy response_event semantics
@@ -756,4 +778,3 @@ class RealtimeClient:
     def set_max_buffer_seconds(self, seconds: float):
         """Set maximum buffer size in seconds for backpressure handling"""
         self.max_buffer_seconds = max(1.0, seconds)  # Minimum 1 second
-

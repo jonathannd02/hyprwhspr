@@ -74,6 +74,15 @@ class WhisperManager:
         self._cohere_processor = None
         self._cohere_compile_done = False  # True after first torch.compile run; suppression no longer needed
 
+        # Keep REST connections warm across repeated dictations.
+        self._rest_session = requests.Session()
+        _rest_adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=4)
+        self._rest_session.mount('https://', _rest_adapter)
+        self._rest_session.mount('http://', _rest_adapter)
+        self._rest_warm_lock = threading.Lock()
+        self._rest_last_warm = 0.0
+        threading.Thread(target=self._warm_rest_pool, daemon=True).start()
+
         # Thread safety for model operations
         self._model_lock = threading.Lock()
 
@@ -85,6 +94,28 @@ class WhisperManager:
 
         # Set when model is deliberately unloaded via unload_model() to free GPU resources
         self._model_manually_unloaded = False
+
+    def _get_transcription_prompt(self, language: Optional[str] = None) -> Optional[str]:
+        """Build the prompt passed to backends that support prompt guidance."""
+        if hasattr(self.config, 'refresh_word_learning_config'):
+            self.config.refresh_word_learning_config()
+
+        prompt = (self.config.get_setting(f'whisper_prompt_{language}', None) if language else None) or self.config.get_setting('whisper_prompt', None)
+        prompt_parts = []
+        if prompt:
+            prompt_parts.append(prompt)
+
+        try:
+            vocabulary = self.config.get_custom_vocabulary()
+        except AttributeError:
+            vocabulary = self.config.get_setting('custom_vocabulary', [])
+
+        vocabulary = [str(term).strip() for term in vocabulary if str(term).strip()] if isinstance(vocabulary, list) else []
+        if vocabulary:
+            terms = ', '.join(vocabulary)
+            prompt_parts.append(f'Preferred vocabulary: {terms}. Use these terms exactly when they are spoken; do not add them unless spoken.')
+
+        return ' '.join(prompt_parts) if prompt_parts else None
 
     def initialize(self) -> bool:
         """Initialize the whisper manager and check dependencies"""
@@ -503,13 +534,13 @@ class WhisperManager:
                             print(f'ERROR: Failed to derive WebSocket URL: {e}')
                             return False
                     
-                    # Build instructions from whisper_prompt and language
+                    # Build instructions from whisper_prompt, custom vocabulary, and language
                     instructions_parts = []
-                    whisper_prompt = self.config.get_setting('whisper_prompt', None)
+                    language = self.config.get_setting('language', None)
+                    whisper_prompt = self._get_transcription_prompt(language)
                     if whisper_prompt:
                         instructions_parts.append(whisper_prompt)
-                    
-                    language = self.config.get_setting('language', None)
+
                     if language:
                         instructions_parts.append(f"Transcribe in {language} language.")
                     
@@ -517,6 +548,14 @@ class WhisperManager:
                     
                     # Set language in realtime client (for session.update)
                     self._realtime_client.language = language
+                    self._realtime_client.transcription_model = self.config.get_setting(
+                        'realtime_transcription_model',
+                        'gpt-4o-mini-transcribe',
+                    )
+                    self._realtime_client.noise_reduction = self.config.get_setting(
+                        'realtime_noise_reduction',
+                        'near_field',
+                    )
                     
                     # Set buffer max seconds
                     buffer_max = self.config.get_setting('realtime_buffer_max_seconds', 5)
@@ -551,6 +590,8 @@ class WhisperManager:
                 
                 print(f'[BACKEND] Using Realtime WebSocket: {websocket_url}')
                 print(f'[REALTIME] Model: {model_id}, Provider: {provider_id}')
+                if provider_id != 'elevenlabs' and getattr(self._realtime_client, 'transcription_model', None):
+                    print(f'[REALTIME] Transcription model: {self._realtime_client.transcription_model}')
                 
                 # Explicitly set to None to avoid confusion with top-level model setting
                 self.current_model = None
@@ -983,6 +1024,24 @@ class WhisperManager:
             # Converse mode uses model parameter
             return f"{base_url}?model={model_id}"
 
+    def _warm_rest_pool(self) -> None:
+        """Open TCP+TLS to REST endpoint host so first transcription does not pay handshake cost."""
+        with self._rest_warm_lock:
+            try:
+                url = self.config.get_setting('rest_endpoint_url', '')
+                if not url:
+                    return
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                if not parsed.scheme or not parsed.netloc:
+                    return
+                base = f'{parsed.scheme}://{parsed.netloc}/'
+                self._rest_session.head(base, timeout=5, allow_redirects=False)
+                self._rest_last_warm = time.monotonic()
+                print('[REST] Connection pool warmed', flush=True)
+            except Exception as e:
+                print(f'[REST] Warmup failed (non-fatal): {e}', flush=True)
+
     def _transcribe_rest(self, audio_data: np.ndarray, sample_rate: int = 16000, language_override: Optional[str] = None) -> str:
         """
         Transcribe audio using remote REST API endpoint
@@ -1105,11 +1164,7 @@ class WhisperManager:
 
             # Fill prompt from config - use language-specific prompt if available
             if 'prompt' not in data:
-                whisper_prompt = None
-                if language:
-                    whisper_prompt = self.config.get_setting(f'whisper_prompt_{language}', None)
-                if not whisper_prompt:
-                    whisper_prompt = self.config.get_setting('whisper_prompt', None)
+                whisper_prompt = self._get_transcription_prompt(language)
                 if whisper_prompt:
                     data['prompt'] = whisper_prompt
 
@@ -1119,10 +1174,33 @@ class WhisperManager:
                 param_summary = ', '.join(f'{k}={v[:20] + "..." if isinstance(v, str) and len(v) > 20 else v}' for k, v in data.items())
                 print(f'[REST] Request params: {param_summary}', flush=True)
 
-            # Send the request
+            # Send the request, with one retry on cold-pool ConnectionError/Timeout
             print(f'[REST] Sending request to {endpoint_url}...', flush=True)
             start_time = time.time()
-            response = requests.post(endpoint_url, files=files, data=data, headers=headers, timeout=timeout)
+            response = None
+            last_transient_exc = None
+            for attempt in (1, 2):
+                try:
+                    response = self._rest_session.post(endpoint_url, files=files, data=data, headers=headers, timeout=timeout)
+                    break
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                    last_transient_exc = exc
+                    if attempt == 1:
+                        print(f'[REST] Transient error on attempt 1 ({type(exc).__name__}); rewarming pool and retrying', flush=True)
+                        try:
+                            self._rest_session.close()
+                        except Exception:
+                            pass
+                        self._rest_session = requests.Session()
+                        _adapter = requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=4)
+                        self._rest_session.mount('https://', _adapter)
+                        self._rest_session.mount('http://', _adapter)
+                        self._warm_rest_pool()
+                        continue
+                    raise
+            if response is None:
+                # Unreachable in practice; raise stored exc to be handled below
+                raise last_transient_exc if last_transient_exc else RuntimeError('REST request failed without response')
             response_time = time.time() - start_time
             print(f'[REST] Response received in {response_time:.2f}s (status: {response.status_code})', flush=True)
 
@@ -1299,7 +1377,7 @@ class WhisperManager:
             return ''
 
         language = language_override if language_override is not None else self.config.get_setting('language', None)
-        whisper_prompt = (self.config.get_setting(f'whisper_prompt_{language}', None) if language else None) or self.config.get_setting('whisper_prompt', None)
+        whisper_prompt = self._get_transcription_prompt(language)
         vad_filter = self.config.get_setting('faster_whisper_vad_filter', True)
         task = self.config.get_setting('task', 'transcribe')
 
@@ -1734,7 +1812,7 @@ class WhisperManager:
                         print(f'[WARN] language auto-detect failed: {e}; falling back to en', flush=True)
                         language = 'en'
 
-                whisper_prompt = (self.config.get_setting(f'whisper_prompt_{language}', None) if language else None) or self.config.get_setting('whisper_prompt', None)
+                whisper_prompt = self._get_transcription_prompt(language)
 
                 task = self.config.get_setting('task', 'transcribe')
 

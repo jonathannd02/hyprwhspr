@@ -85,6 +85,22 @@ class TextInjector:
         except Exception:
             return DEFAULT_PASTE_KEYCODE
 
+    def _get_float_setting(self, key: str, default: float, minimum: float = 0.0, maximum: float = 2.0) -> float:
+        """Read a bounded float setting, falling back to a conservative default."""
+        if not self.config_manager:
+            return default
+
+        try:
+            value = float(self.config_manager.get_setting(key, default))
+        except Exception:
+            return default
+
+        if value < minimum:
+            return minimum
+        if value > maximum:
+            return maximum
+        return value
+
     def _get_active_window_info(self) -> Optional[Dict[str, Any]]:
         """Get active window info, trying multiple compositor APIs."""
         # Hyprland
@@ -97,6 +113,26 @@ class TextInjector:
                 return json.loads(result.stdout)
         except Exception:
             pass
+
+        # Niri native fallback. Niri does not expose Hyprland's `hyprctl`
+        # interface, but it can report the focused window app_id directly.
+        if shutil.which('niri'):
+            try:
+                result = subprocess.run(
+                    ['niri', 'msg', '-j', 'focused-window'],
+                    capture_output=True, text=True, timeout=0.5
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    window = json.loads(result.stdout)
+                    app_id = (window.get('app_id') or '').strip()
+                    if app_id:
+                        return {
+                            'class': app_id,
+                            'title': window.get('title', ''),
+                            'pid': window.get('pid'),
+                        }
+            except Exception:
+                pass
 
         # X11 / XWayland fallback (works on GNOME, KDE, etc. when XWayland is running)
         if shutil.which('xdotool') and shutil.which('xprop'):
@@ -444,11 +480,17 @@ class TextInjector:
         """
         Preprocess text to handle common speech-to-text corrections and remove unwanted line breaks
         """
+        if self.config_manager and hasattr(self.config_manager, 'refresh_word_learning_config'):
+            self.config_manager.refresh_word_learning_config()
+
         # Normalize line breaks to spaces to avoid unintended "Enter"
         processed = text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
 
         # Apply user-defined overrides first
         processed = self._apply_word_overrides(processed)
+
+        # Remove words/phrases that are commonly hallucinated
+        processed = self._filter_banned_words(processed)
 
         # Filter filler words if enabled
         processed = self._filter_filler_words(processed)
@@ -570,6 +612,28 @@ class TextInjector:
 
         return processed
 
+    def _filter_banned_words(self, text: str) -> str:
+        """Remove user-defined banned words and phrases from the text"""
+        if not self.config_manager:
+            return text
+
+        banned_words = self.config_manager.get_banned_words()
+        if not banned_words:
+            return text
+
+        processed = text
+        for word in banned_words:
+            if word:
+                if len(word) == 1:
+                    processed = re.sub(re.escape(word), '', processed, flags=re.IGNORECASE)
+                else:
+                    pattern = r'\b' + re.escape(word) + r'\b'
+                    processed = re.sub(pattern, '', processed, flags=re.IGNORECASE)
+
+        processed = re.sub(r' +', ' ', processed)
+        processed = re.sub(r'\s+([.,!?;:])', r'\1', processed)
+        return processed.strip()
+
     def _filter_filler_words(self, text: str) -> str:
         """Remove filler words like uh, um, er if enabled in config"""
         if not self.config_manager:
@@ -600,14 +664,30 @@ class TextInjector:
         """Copy text to clipboard, then trigger paste via wtype (or ydotool fallback)."""
         try:
             window_info = self._get_active_window_info()
+            is_terminal = self._is_terminal(window_info)
             saved_clipboard = self._save_clipboard()
 
-            # Copy text to clipboard
+            # Wait for the user to physically release the hotkey (e.g. Alt+Space)
+            # that triggered transcription. For short recordings, transcription
+            # completes so fast the user's fingers are still on the keys — any
+            # held modifier (Alt) corrupts the paste chord (Ctrl+V → Alt+Ctrl+V).
+            # Synthetic releases via _clear_stuck_modifiers can't override a
+            # physically-held key, so we must simply wait.
+            trigger_release_delay = self._get_float_setting('paste_trigger_release_delay', 0.35)
+            if trigger_release_delay > 0:
+                time.sleep(trigger_release_delay)
+
+            # 1) Set clipboard (prefer wl-copy on Wayland)
             if shutil.which("wl-copy"):
                 subprocess.run(["wl-copy"], input=text.encode("utf-8"), check=True, timeout=2)
             else:
                 pyperclip.copy(text)
-            time.sleep(0.15)
+
+            clipboard_delay_key = 'paste_kitty_clipboard_sync_delay' if is_terminal else 'paste_clipboard_sync_delay'
+            clipboard_delay_default = 0.25 if is_terminal else 0.12
+            clipboard_delay = self._get_float_setting(clipboard_delay_key, clipboard_delay_default)
+            if clipboard_delay > 0:
+                time.sleep(clipboard_delay)
 
             # Resolve paste mode: explicit config override → shift_paste back-compat → auto-detect
             paste_mode = None

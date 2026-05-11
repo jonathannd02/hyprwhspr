@@ -64,14 +64,15 @@ class OSDWindow(Gtk.Window):
         # Put on overlay layer (above everything)
         Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.OVERLAY)
         
-        # Anchor to bottom only (centers horizontally)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, True)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, False)
+        # Anchor to top-left corner
+        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
+        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
+        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
         Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, False)
-        
-        # Margin from bottom
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 130)
+
+        # Margin from top-left corner
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 10)
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 10)
         
         # Don't reserve exclusive space
         Gtk4LayerShell.set_exclusive_zone(self, -1)

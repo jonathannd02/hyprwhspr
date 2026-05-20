@@ -31,6 +31,8 @@ class WaveformVisualization(BaseVisualization):
 
         # Amplification for more visible response
         self.amplification = 4.0
+        self.level_noise_floor = 0.004
+        self.level_full_scale = 0.08
 
         # Smoothing for bar heights (makes animation smoother)
         self.bar_heights = np.zeros(self.num_bars)
@@ -62,15 +64,25 @@ class WaveformVisualization(BaseVisualization):
                 if self.bar_heights[i] < new_heights[i]:
                     self.bar_heights[i] = new_heights[i]
 
+    def _compress_level_for_display(self, level: float) -> float:
+        """Map recorder RMS levels to visually useful bar heights."""
+        level = max(0.0, min(1.0, level))
+        if level <= self.level_noise_floor:
+            return 0.0
+
+        active_range = max(0.001, self.level_full_scale - self.level_noise_floor)
+        normalized = min(1.0, (level - self.level_noise_floor) / active_range)
+        return math.sqrt(normalized)
+
     def _update_from_level(self, level: float):
         """Create visible waveform motion from a recorder-owned scalar level."""
-        if level <= 0.001:
+        scaled_level = self._compress_level_for_display(level)
+        if scaled_level <= 0.0:
             self.bar_heights *= self.decay_rate
             return
 
         self.level_phase += 0.35
         new_heights = np.zeros(self.num_bars)
-        scaled_level = min(1.0, max(0.0, level) * 1.35)
         for i in range(self.num_bars):
             wave = 0.55 + 0.45 * math.sin(self.level_phase + i * 0.72)
             texture = 0.85 + 0.15 * math.sin(self.level_phase * 0.37 + i * 1.91)
@@ -96,7 +108,7 @@ class WaveformVisualization(BaseVisualization):
                     new_heights[i] = min(1.0, rms * self.amplification)
 
                 self._apply_bar_heights(new_heights)
-        elif level > 0.001:
+        elif level > self.level_noise_floor:
             self._update_from_level(level)
         else:
             # No audio - decay all bars

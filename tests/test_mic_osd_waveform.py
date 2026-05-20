@@ -25,6 +25,15 @@ class MicOSDWaveformTests(unittest.TestCase):
         self.assertGreater(float(viz.bar_heights.max()), 0.0)
         self.assertGreater(float(viz.bar_heights.mean()), 0.0)
 
+    def test_quiet_level_only_voice_is_visibly_amplified(self):
+        viz = WaveformVisualization()
+
+        for _ in range(5):
+            viz.update(0.03, samples=None)
+
+        self.assertGreater(float(viz.bar_heights.max()), 0.25)
+        self.assertGreater(float(viz.bar_heights.mean()), 0.12)
+
     def test_silence_decays_level_only_bars(self):
         viz = WaveformVisualization()
         viz.update(0.8, samples=None)

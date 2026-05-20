@@ -114,6 +114,24 @@ USER_SYSTEMD_DIR = USER_HOME / '.config' / 'systemd' / 'user'
 PYWHISPERCPP_MODELS_DIR = Path(os.environ.get('XDG_DATA_HOME', USER_HOME / '.local' / 'share')) / 'pywhispercpp' / 'models'
 
 
+def _is_niri_session() -> bool:
+    """Return true when the current process appears to be running inside Niri."""
+    if os.environ.get('NIRI_SOCKET'):
+        return True
+
+    desktop_values = (
+        os.environ.get('XDG_CURRENT_DESKTOP', ''),
+        os.environ.get('XDG_SESSION_DESKTOP', ''),
+        os.environ.get('DESKTOP_SESSION', ''),
+    )
+    for desktop_value in desktop_values:
+        desktop_names = desktop_value.replace(';', ':').split(':')
+        if 'niri' in [name.strip().lower() for name in desktop_names]:
+            return True
+
+    return False
+
+
 def _check_mise_active() -> tuple[bool, str]:
     """
     Check if MISE (runtime version manager) is active in the current environment.
@@ -1791,12 +1809,15 @@ def setup_command(python_path: Optional[str] = None):
     print(f"Permissions: {'Yes' if setup_permissions_choice else 'No'}")
 
     # Paste mode detection notice — only shown when auto-detection won't work at runtime.
-    # Hyprland users get hyprctl; XWayland users get xdotool. Pure Wayland non-Hyprland
-    # users get neither, so terminal paste (Ctrl+Shift+V) won't be auto-selected.
+    # Hyprland users get hyprctl, Niri sessions expose niri msg through
+    # NIRI_SOCKET, and XWayland users get xdotool. Pure Wayland compositors
+    # without one of those APIs cannot tell terminals from other apps, so
+    # terminal paste (Ctrl+Shift+V) won't be auto-selected.
     _has_hyprctl = bool(shutil.which('hyprctl'))
+    _has_niri = bool(shutil.which('niri')) and bool(os.environ.get('NIRI_SOCKET'))
     _has_xdotool = bool(shutil.which('xdotool'))
-    if not _has_hyprctl and not _has_xdotool:
-        print("\nNote: Window detection unavailable on this system (no hyprctl or xdotool).")
+    if not _has_hyprctl and not _has_niri and not _has_xdotool:
+        print("\nNote: Window detection unavailable on this system (no hyprctl, niri session, or xdotool).")
         print("Paste will default to Ctrl+V, which works in most apps but not terminals.")
         print("If you primarily dictate into terminals, run after setup:")
         print("  hyprwhspr config set paste_mode ctrl_shift")
@@ -2823,6 +2844,16 @@ def setup_systemd(mode: str = 'install'):
     except IOError as e:
         log_error(f"Failed to read/write service file: {e}")
         return False
+
+    # Import the compositor environment visible to this setup process into the
+    # systemd user manager. Niri's focused-window IPC needs NIRI_SOCKET; Hyprland
+    # detection needs HYPRLAND_INSTANCE_SIGNATURE; wtype/wl-clipboard need the
+    # Wayland display environment.
+    run_command([
+        'systemctl', '--user', 'import-environment',
+        'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP',
+        'HYPRLAND_INSTANCE_SIGNATURE', 'NIRI_SOCKET',
+    ], check=False)
 
     # Reload systemd daemon
     run_command(['systemctl', '--user', 'daemon-reload'], check=False)
@@ -4385,18 +4416,29 @@ def validate_command():
     except Exception:
         pass
 
-    # Check WAYLAND_DISPLAY in systemd user environment
+    # Check Wayland compositor environment in systemd user environment
     try:
         result = subprocess.run(
             ['systemctl', '--user', 'show-environment'],
             capture_output=True, text=True, timeout=5, check=False
         )
-        if result.returncode == 0 and 'WAYLAND_DISPLAY=' in result.stdout:
+        env_output = result.stdout if result.returncode == 0 else ''
+        if 'WAYLAND_DISPLAY=' in env_output:
             log_success("✓ WAYLAND_DISPLAY set in systemd user environment")
         else:
             log_warning("⚠ WAYLAND_DISPLAY not found in systemd user environment")
-            print("  Add to ~/.config/hypr/hyprland.conf:")
+            print("  Add the relevant compositor environment export to your startup config.")
+            print("  Hyprland example:")
             print("    exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP HYPRLAND_INSTANCE_SIGNATURE")
+
+        if _is_niri_session():
+            if 'NIRI_SOCKET=' in env_output:
+                log_success("✓ NIRI_SOCKET set in systemd user environment")
+            else:
+                log_warning("⚠ NIRI_SOCKET not found in systemd user environment")
+                print("  Niri window detection needs NIRI_SOCKET in the systemd user environment.")
+                print("  Add to your Niri startup config:")
+                print("    spawn-at-startup \"dbus-update-activation-environment\" \"--systemd\" \"WAYLAND_DISPLAY\" \"XDG_CURRENT_DESKTOP\" \"NIRI_SOCKET\"")
     except Exception:
         pass
 

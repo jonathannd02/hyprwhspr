@@ -1230,7 +1230,7 @@ Check your session:
 systemctl --user is-active graphical-session.target
 
 # Verify Wayland env is available to systemd services
-systemctl --user show-environment | grep WAYLAND_DISPLAY
+systemctl --user show-environment | grep -E 'WAYLAND_DISPLAY|NIRI_SOCKET'
 ```
 
 If `WAYLAND_DISPLAY` is missing, add to `~/.config/hypr/hyprland.conf`:
@@ -1238,6 +1238,16 @@ If `WAYLAND_DISPLAY` is missing, add to `~/.config/hypr/hyprland.conf`:
 ```bash
 # Export session environment to systemd user services
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP HYPRLAND_INSTANCE_SIGNATURE
+```
+
+**Niri:**
+
+hyprwhspr uses `niri msg --json focused-window` to detect the focused app and choose the correct paste shortcut. That requires `NIRI_SOCKET` to be available in the systemd user environment used by `hyprwhspr.service`.
+
+If `NIRI_SOCKET` is missing, add an environment export to your Niri startup config:
+
+```kdl
+spawn-at-startup "dbus-update-activation-environment" "--systemd" "WAYLAND_DISPLAY" "XDG_CURRENT_DESKTOP" "NIRI_SOCKET"
 ```
 
 **Hyprland:**

@@ -103,23 +103,11 @@ class TextInjector:
 
     def _get_active_window_info(self) -> Optional[Dict[str, Any]]:
         """Get active window info, trying multiple compositor APIs."""
-        # Hyprland
-        try:
-            result = subprocess.run(
-                ['hyprctl', 'activewindow', '-j'],
-                capture_output=True, text=True, timeout=0.5
-            )
-            if result.returncode == 0:
-                return json.loads(result.stdout)
-        except Exception:
-            pass
-
-        # Niri native fallback. Niri does not expose Hyprland's `hyprctl`
-        # interface, but it can report the focused window app_id directly.
+        # Niri
         if shutil.which('niri'):
             try:
                 result = subprocess.run(
-                    ['niri', 'msg', '-j', 'focused-window'],
+                    ['niri', 'msg', '--json', 'focused-window'],
                     capture_output=True, text=True, timeout=0.5
                 )
                 if result.returncode == 0 and result.stdout.strip():
@@ -130,9 +118,21 @@ class TextInjector:
                             'class': app_id,
                             'title': window.get('title', ''),
                             'pid': window.get('pid'),
+                            'source': 'niri',
                         }
             except Exception:
                 pass
+
+        # Hyprland
+        try:
+            result = subprocess.run(
+                ['hyprctl', 'activewindow', '-j'],
+                capture_output=True, text=True, timeout=0.5
+            )
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+        except Exception:
+            pass
 
         # X11 / XWayland fallback (works on GNOME, KDE, etc. when XWayland is running)
         if shutil.which('xdotool') and shutil.which('xprop'):
@@ -236,11 +236,15 @@ class TextInjector:
         if not window_info:
             return False
         window_class = window_info.get('class', '').lower()
+        window_identifiers = {window_class}
+        if window_class.endswith('.desktop'):
+            window_identifiers.add(window_class[:-len('.desktop')])
+
         terminals = {
             'ghostty', 'com.mitchellh.ghostty',
             'kitty',
             'wezterm', 'org.wezfurlong.wezterm',
-            'alacritty',
+            'alacritty', 'org.alacritty.alacritty',
             'foot',
             'konsole', 'org.kde.konsole',
             'gnome-terminal', 'org.gnome.terminal',
@@ -262,7 +266,7 @@ class TextInjector:
             'tabby',
             'hyper',
         }
-        return window_class in terminals
+        return bool(window_identifiers & terminals)
 
     def _detect_paste_mode(self, window_info: Optional[Dict[str, Any]] = None) -> str:
         """Auto-detect paste key combo. Terminals → Ctrl+Shift+V, else → Ctrl+V."""

@@ -56,6 +56,22 @@ def make_osd():
 
 
 class MicOSDAsyncPositioningTests(unittest.TestCase):
+    def test_reads_focused_niri_output_name(self):
+        osd = make_osd()
+        payload = '[{"output":"eDP-1","is_focused":false},{"output":"HDMI-A-1","is_focused":true}]'
+
+        with (
+            mock.patch.dict(osd_main.os.environ, {"NIRI_SOCKET": "/tmp/niri.sock"}),
+            mock.patch.object(
+                osd_main.subprocess,
+                "run",
+                return_value=mock.Mock(returncode=0, stdout=payload),
+            ) as run,
+        ):
+            self.assertEqual(osd._get_focused_output_name(), "HDMI-A-1")
+
+        run.assert_called_once()
+
     def test_show_does_not_block_on_caret_lookup_or_stack_workers(self):
         osd = make_osd()
         lookup_entered = threading.Event()

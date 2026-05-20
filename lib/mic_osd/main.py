@@ -11,6 +11,8 @@ import sys
 import signal
 import os
 import threading
+import json
+import subprocess
 from pathlib import Path
 
 import gi
@@ -334,6 +336,7 @@ class MicOSD:
 
         osd_width = self.width
         osd_height = self.height
+        focused_monitor_name = self._get_focused_output_name()
 
         def lookup_position():
             position = None
@@ -344,6 +347,7 @@ class MicOSD:
                     monitors=monitors,
                     osd_width=osd_width,
                     osd_height=osd_height,
+                    focused_monitor_name=focused_monitor_name,
                 )
             except Exception as e:
                 print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
@@ -367,6 +371,35 @@ class MicOSD:
             print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
             with self._position_lookup_lock:
                 self._position_lookup_inflight = False
+
+    def _get_focused_output_name(self):
+        """Return the focused Niri output name when available."""
+        if not os.environ.get("NIRI_SOCKET"):
+            return None
+
+        try:
+            result = subprocess.run(
+                ["niri", "msg", "--json", "workspaces"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=0.2,
+            )
+        except Exception:
+            return None
+
+        if result.returncode != 0:
+            return None
+
+        try:
+            workspaces = json.loads(result.stdout)
+        except Exception:
+            return None
+
+        for workspace in workspaces:
+            if workspace.get("is_focused"):
+                return workspace.get("output")
+        return None
 
     def _apply_position_result(self, position, generation):
         """Apply a completed caret lookup result on the GTK main thread."""

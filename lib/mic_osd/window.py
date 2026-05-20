@@ -188,6 +188,7 @@ class OSDWindow(Gtk.Window):
                     y=geometry.y,
                     width=geometry.width,
                     height=geometry.height,
+                    name=getattr(monitor, "get_connector", lambda: None)(),
                 )
             )
         return geometries

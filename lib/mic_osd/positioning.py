@@ -27,6 +27,7 @@ class MonitorGeometry:
     y: int
     width: int
     height: int
+    name: str | None = None
 
 
 _ATSPI_LOCK = threading.Lock()
@@ -88,16 +89,47 @@ def compute_osd_position_for_monitors(
     osd_width: int,
     osd_height: int,
     *,
+    focused_monitor_name: str | None = None,
     fixed_x: int = 10,
     fixed_y: int = 10,
     gap: int = 8,
     margin: int = 10,
 ) -> Optional[tuple[int, int, int]]:
     """Return monitor index plus monitor-local OSD coordinates for a global caret."""
+    focused_monitor = None
+    focused_index = None
+    if focused_monitor_name:
+        for index, monitor in enumerate(monitors):
+            if monitor.name == focused_monitor_name:
+                focused_monitor = monitor
+                focused_index = index
+                break
+
     if caret is None:
-        return None
+        if focused_monitor is None or focused_index is None:
+            return None
+        x = max(margin, int(round((focused_monitor.width - osd_width) / 2)))
+        y = max(margin, fixed_y)
+        return (focused_index, x, y)
+
     if not _is_finite_rect(caret) or caret.width < 0 or caret.height <= 0:
         return None
+
+    if focused_monitor is not None and focused_index is not None:
+        local_position = compute_osd_position(
+            caret,
+            screen_width=focused_monitor.width,
+            screen_height=focused_monitor.height,
+            osd_width=osd_width,
+            osd_height=osd_height,
+            fixed_x=fixed_x,
+            fixed_y=fixed_y,
+            gap=gap,
+            margin=margin,
+        )
+        if local_position is not None:
+            x, y = local_position
+            return (focused_index, x, y)
 
     caret_right = caret.x + caret.width
     caret_bottom = caret.y + caret.height

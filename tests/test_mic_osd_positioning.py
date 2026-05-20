@@ -119,14 +119,42 @@ class OSDPositioningTests(unittest.TestCase):
         result = compute_osd_position_for_monitors(
             CaretRect(x=2500, y=500, width=2, height=20),
             monitors=[
-                MonitorGeometry(x=0, y=0, width=1920, height=1080),
-                MonitorGeometry(x=1920, y=0, width=1920, height=1080),
+                MonitorGeometry(x=0, y=0, width=1920, height=1080, name="eDP-1"),
+                MonitorGeometry(x=1920, y=0, width=1920, height=1080, name="HDMI-A-1"),
             ],
             osd_width=200,
             osd_height=40,
         )
 
         self.assertEqual(result, (1, 481, 452))
+
+    def test_interprets_caret_as_focused_monitor_local_when_needed(self):
+        result = compute_osd_position_for_monitors(
+            CaretRect(x=580, y=500, width=2, height=20),
+            monitors=[
+                MonitorGeometry(x=0, y=0, width=1920, height=1080, name="eDP-1"),
+                MonitorGeometry(x=1920, y=0, width=1920, height=1080, name="HDMI-A-1"),
+            ],
+            osd_width=200,
+            osd_height=40,
+            focused_monitor_name="HDMI-A-1",
+        )
+
+        self.assertEqual(result, (1, 481, 452))
+
+    def test_falls_back_to_focused_monitor_top_center_without_caret(self):
+        result = compute_osd_position_for_monitors(
+            None,
+            monitors=[
+                MonitorGeometry(x=0, y=0, width=1920, height=1080, name="eDP-1"),
+                MonitorGeometry(x=1920, y=0, width=1920, height=1080, name="HDMI-A-1"),
+            ],
+            osd_width=200,
+            osd_height=40,
+            focused_monitor_name="HDMI-A-1",
+        )
+
+        self.assertEqual(result, (1, 860, 10))
 
     def test_get_focused_caret_rect_skips_invalid_focused_text_and_searches_deeper(self):
         class FakeRect:

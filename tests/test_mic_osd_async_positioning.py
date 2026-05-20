@@ -29,8 +29,8 @@ class DummyWindow:
 
     def get_monitor_geometries(self):
         return [
-            MonitorGeometry(x=0, y=0, width=1920, height=1080),
-            MonitorGeometry(x=1920, y=0, width=1920, height=1080),
+            MonitorGeometry(x=0, y=0, width=1920, height=1080, name="eDP-1"),
+            MonitorGeometry(x=1920, y=0, width=1920, height=1080, name="HDMI-A-1"),
         ]
 
     def set_layer_position(self, x, y, monitor_index=None):
@@ -116,6 +116,21 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
             release_lookup.set()
             self.assertTrue(idle_added.wait(timeout=0.5))
 
+    def test_show_starts_on_focused_output_top_center_before_lookup(self):
+        osd = make_osd()
+
+        with (
+            mock.patch.object(osd_main.GLib, "timeout_add", return_value=101),
+            mock.patch.object(osd_main.GLib, "timeout_add_seconds", return_value=102),
+            mock.patch.object(osd_main.GLib, "source_remove"),
+            mock.patch.object(osd_main.GLib, "idle_add", return_value=103),
+            mock.patch.object(osd, "_get_focused_output_name", return_value="HDMI-A-1"),
+            mock.patch.object(osd_main, "get_focused_caret_rect", return_value=None),
+        ):
+            osd._show()
+
+        self.assertEqual(osd.window.layer_positions[0], (860, 10, 1))
+
     def test_failed_lookup_keeps_existing_position_instead_of_resetting(self):
         osd = make_osd()
         osd.visible = True
@@ -146,7 +161,7 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
             while time.monotonic() < deadline and not osd.window.layer_positions:
                 time.sleep(0.01)
 
-        self.assertEqual(osd.window.layer_positions, [(481, 452, 1)])
+        self.assertIn((481, 452, 1), osd.window.layer_positions)
 
 
 if __name__ == "__main__":

@@ -197,6 +197,7 @@ class MicOSD:
 
         self.visible = True
         self._position_generation += 1
+        self._apply_initial_position()
         self.window.set_visible(True)
         self._schedule_position_update()
 
@@ -371,6 +372,41 @@ class MicOSD:
             print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
             with self._position_lookup_lock:
                 self._position_lookup_inflight = False
+
+    def _apply_initial_position(self):
+        """Place the OSD on the focused output before async caret lookup completes."""
+        if not self.window:
+            return
+
+        try:
+            if hasattr(self.window, "get_monitor_geometries"):
+                monitors = self.window.get_monitor_geometries()
+            else:
+                screen_width, screen_height = self.window.get_primary_monitor_size()
+                monitors = [MonitorGeometry(x=0, y=0, width=screen_width, height=screen_height)]
+        except Exception:
+            return
+
+        if not monitors:
+            return
+
+        focused_monitor_name = self._get_focused_output_name()
+        position = compute_osd_position_for_monitors(
+            None,
+            monitors=monitors,
+            osd_width=self.width,
+            osd_height=self.height,
+            focused_monitor_name=focused_monitor_name,
+        )
+        if position is None:
+            monitor = monitors[0]
+            position = (0, max(10, int(round((monitor.width - self.width) / 2))), 10)
+
+        monitor_index, x, y = position
+        try:
+            self.window.set_layer_position(x, y, monitor_index=monitor_index)
+        except Exception as e:
+            print(f"[MIC-OSD] Initial positioning unavailable: {e}", flush=True)
 
     def _get_focused_output_name(self):
         """Return the focused Niri output name when available."""

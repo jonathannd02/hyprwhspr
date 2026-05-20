@@ -134,6 +134,7 @@ class hyprwhsprApp:
         # Cancel pending delayed-hide from _show_result_and_hide when a new recording starts
         self._cancel_pending_hide = False
         self._cancel_pending_hide_lock = threading.Lock()
+        self._mic_osd_hide_generation = 0
 
         # Background recovery retry state (for suspend/resume)
         self._background_recovery_needed = threading.Event()  # Signal that recovery should be retried
@@ -1194,8 +1195,8 @@ class hyprwhsprApp:
                 with self._recording_lock:
                     self.is_recording = False
                 self._write_recording_status(False)
-                self._hide_mic_osd()
                 self._stop_audio_level_monitoring()
+                self._show_result_and_hide(False)
                 self._notify_zero_volume(
                     "Realtime backend not connected (WebSocket closed while idle?). Try again.",
                     log_level="ERROR",
@@ -1722,6 +1723,7 @@ class hyprwhsprApp:
         """Show mic-osd visualization overlay."""
         with self._cancel_pending_hide_lock:
             self._cancel_pending_hide = True
+            self._mic_osd_hide_generation += 1
         if self._mic_osd_runner and self._mic_osd_runner.is_available():
             self._mic_osd_runner.show(state=state)
 
@@ -1753,15 +1755,20 @@ class hyprwhsprApp:
         # cancel from an earlier _show_mic_osd that already completed)
         with self._cancel_pending_hide_lock:
             self._cancel_pending_hide = False
+            self._mic_osd_hide_generation += 1
+            hide_generation = self._mic_osd_hide_generation
 
         # Schedule hiding after 1.25 seconds (matches animation fade duration)
         def delayed_hide():
             time.sleep(1.25)
             with self._cancel_pending_hide_lock:
-                should_hide = not self._cancel_pending_hide
-            if not should_hide:
-                return  # New recording started; don't hide
-            self._hide_mic_osd()
+                should_hide = (
+                    not self._cancel_pending_hide
+                    and self._mic_osd_hide_generation == hide_generation
+                )
+                if not should_hide:
+                    return  # New recording or newer result state started; don't hide
+                self._hide_mic_osd()
 
         hide_thread = threading.Thread(target=delayed_hide, daemon=True)
         hide_thread.start()

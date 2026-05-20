@@ -89,7 +89,7 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
 
             self.assertLess(elapsed, 0.1)
             self.assertEqual(osd.window.visible_values, [True])
-            self.assertGreaterEqual(osd.window.reset_count, 1)
+            self.assertEqual(osd.window.reset_count, 0)
             self.assertTrue(lookup_entered.wait(timeout=0.5))
 
             osd._show()
@@ -99,6 +99,16 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
 
             release_lookup.set()
             self.assertTrue(idle_added.wait(timeout=0.5))
+
+    def test_failed_lookup_keeps_existing_position_instead_of_resetting(self):
+        osd = make_osd()
+        osd.visible = True
+        osd._position_generation = 4
+
+        osd._apply_position_result(None, generation=4)
+
+        self.assertEqual(osd.window.reset_count, 0)
+        self.assertEqual(osd.window.layer_positions, [])
 
     def test_global_caret_position_is_applied_on_matching_monitor(self):
         osd = make_osd()

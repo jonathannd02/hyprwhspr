@@ -195,10 +195,6 @@ class MicOSD:
 
         self.visible = True
         self._position_generation += 1
-        try:
-            self.window.reset_layer_position()
-        except Exception:
-            pass
         self.window.set_visible(True)
         self._schedule_position_update()
 
@@ -327,11 +323,7 @@ class MicOSD:
                 screen_width, screen_height = self.window.get_primary_monitor_size()
                 monitors = [MonitorGeometry(x=0, y=0, width=screen_width, height=screen_height)]
         except Exception as e:
-            print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
-            try:
-                self.window.reset_layer_position()
-            except Exception:
-                pass
+            print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
             return
 
         with self._position_lookup_lock:
@@ -354,7 +346,7 @@ class MicOSD:
                     osd_height=osd_height,
                 )
             except Exception as e:
-                print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
+                print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
 
             def apply_result():
                 self._position_source_id = None
@@ -372,7 +364,7 @@ class MicOSD:
         try:
             threading.Thread(target=lookup_position, daemon=True).start()
         except Exception as e:
-            print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
+            print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
             with self._position_lookup_lock:
                 self._position_lookup_inflight = False
 
@@ -382,18 +374,11 @@ class MicOSD:
             return
 
         try:
-            if position is None:
-                self.window.reset_layer_position()
-            else:
+            if position is not None:
                 monitor_index, x, y = position
                 self.window.set_layer_position(x, y, monitor_index=monitor_index)
         except Exception as e:
-            print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
-            try:
-                if generation is None or (self.visible and generation == self._position_generation):
-                    self.window.reset_layer_position()
-            except Exception:
-                pass
+            print(f"[MIC-OSD] Positioning unavailable: {e}", flush=True)
     
     def _update(self):
         """Update visualization with current audio data."""

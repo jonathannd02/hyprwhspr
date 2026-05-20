@@ -183,9 +183,9 @@ class MicOSD:
 
     def _show(self):
         """Show the OSD and start audio monitoring."""
-        # If already visible and audio monitoring is running, return early
+        # If already visible and updates are running, return early
         # This handles the normal case where _show() is called multiple times
-        if self.visible and self.audio_monitor and self.update_timer_id:
+        if self.visible and self.update_timer_id:
             return
 
         # If window doesn't exist yet (race condition with signal handlers),
@@ -199,7 +199,6 @@ class MicOSD:
         self._position_generation += 1
         self._apply_initial_position()
         self.window.set_visible(True)
-        self._schedule_position_update()
 
         # Start audio monitoring
         if not self._use_file_audio:
@@ -374,7 +373,7 @@ class MicOSD:
                 self._position_lookup_inflight = False
 
     def _apply_initial_position(self):
-        """Place the OSD on the focused output before async caret lookup completes."""
+        """Place the OSD deterministically before it becomes visible."""
         if not self.window:
             return
 

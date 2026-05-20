@@ -72,21 +72,8 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
 
         run.assert_called_once()
 
-    def test_show_does_not_block_on_caret_lookup_or_stack_workers(self):
+    def test_show_does_not_lookup_caret_or_reposition_when_repeated(self):
         osd = make_osd()
-        lookup_entered = threading.Event()
-        release_lookup = threading.Event()
-        idle_added = threading.Event()
-        lookup_calls = 0
-        lookup_lock = threading.Lock()
-
-        def blocking_caret_lookup():
-            nonlocal lookup_calls
-            with lookup_lock:
-                lookup_calls += 1
-            lookup_entered.set()
-            release_lookup.wait(timeout=1)
-            return None
 
         with (
             mock.patch.object(osd_main.GLib, "timeout_add", return_value=101),
@@ -95,9 +82,14 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
             mock.patch.object(
                 osd_main.GLib,
                 "idle_add",
-                side_effect=lambda callback: idle_added.set() or 103,
+                return_value=103,
+            ) as idle_add,
+            mock.patch.object(osd_main, "get_focused_caret_rect") as caret_lookup,
+            mock.patch.object(
+                osd,
+                "_get_focused_output_name",
+                side_effect=["HDMI-A-1", "eDP-1"],
             ),
-            mock.patch.object(osd_main, "get_focused_caret_rect", side_effect=blocking_caret_lookup),
         ):
             start = time.monotonic()
             osd._show()
@@ -106,15 +98,15 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
             self.assertLess(elapsed, 0.1)
             self.assertEqual(osd.window.visible_values, [True])
             self.assertEqual(osd.window.reset_count, 0)
-            self.assertTrue(lookup_entered.wait(timeout=0.5))
+            self.assertEqual(osd.window.layer_positions, [(860, 10, 1)])
+            caret_lookup.assert_not_called()
+            idle_add.assert_not_called()
 
             osd._show()
-            time.sleep(0.02)
-            with lookup_lock:
-                self.assertEqual(lookup_calls, 1)
-
-            release_lookup.set()
-            self.assertTrue(idle_added.wait(timeout=0.5))
+            self.assertEqual(osd.window.visible_values, [True])
+            self.assertEqual(osd.window.layer_positions, [(860, 10, 1)])
+            caret_lookup.assert_not_called()
+            idle_add.assert_not_called()
 
     def test_show_starts_on_focused_output_top_center_before_lookup(self):
         osd = make_osd()
@@ -141,27 +133,59 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
         self.assertEqual(osd.window.reset_count, 0)
         self.assertEqual(osd.window.layer_positions, [])
 
-    def test_global_caret_position_is_applied_on_matching_monitor(self):
+    def test_global_caret_position_is_not_applied_after_show(self):
         osd = make_osd()
 
         with (
             mock.patch.object(osd_main.GLib, "timeout_add", return_value=101),
             mock.patch.object(osd_main.GLib, "timeout_add_seconds", return_value=102),
             mock.patch.object(osd_main.GLib, "source_remove"),
-            mock.patch.object(osd_main.GLib, "idle_add", side_effect=lambda callback: callback()),
+            mock.patch.object(osd_main.GLib, "idle_add") as idle_add,
             mock.patch.object(
                 osd_main,
                 "get_focused_caret_rect",
                 return_value=CaretRect(x=2500, y=500, width=2, height=20),
-            ),
+            ) as caret_lookup,
+            mock.patch.object(osd, "_get_focused_output_name", return_value=None),
         ):
             osd._show()
 
-            deadline = time.monotonic() + 0.5
-            while time.monotonic() < deadline and not osd.window.layer_positions:
-                time.sleep(0.01)
+        caret_lookup.assert_not_called()
+        idle_add.assert_not_called()
+        self.assertEqual(osd.window.layer_positions, [(860, 10, 0)])
 
-        self.assertIn((481, 452, 1), osd.window.layer_positions)
+    def test_initial_position_is_applied_before_window_becomes_visible(self):
+        osd = make_osd()
+        event_order = []
+
+        def record_layer_position(x, y, monitor_index=None):
+            event_order.append(("position", x, y, monitor_index))
+            osd.window.layer_positions.append((x, y, monitor_index))
+
+        def record_visible(visible):
+            event_order.append(("visible", visible))
+            osd.window.visible_values.append(visible)
+
+        osd.window.set_layer_position = record_layer_position
+        osd.window.set_visible = record_visible
+
+        with (
+            mock.patch.object(osd_main.GLib, "timeout_add", return_value=101),
+            mock.patch.object(osd_main.GLib, "timeout_add_seconds", return_value=102),
+            mock.patch.object(osd_main.GLib, "source_remove"),
+            mock.patch.object(osd, "_get_focused_output_name", return_value="HDMI-A-1"),
+            mock.patch.object(osd_main, "get_focused_caret_rect") as caret_lookup,
+        ):
+            osd._show()
+
+        caret_lookup.assert_not_called()
+        self.assertEqual(
+            event_order,
+            [
+                ("position", 860, 10, 1),
+                ("visible", True),
+            ],
+        )
 
 
 if __name__ == "__main__":

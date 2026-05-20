@@ -1170,6 +1170,7 @@ class hyprwhsprApp:
             return
 
         print("Recording started", flush=True)
+        self._show_mic_osd(state='starting')
 
         try:
             # Clear zero-volume signal file when starting a new recording
@@ -1241,6 +1242,7 @@ class hyprwhsprApp:
             try:
                 if not self.audio_capture.start_recording(streaming_callback=streaming_callback):
                     raise RuntimeError("start_recording() returned False")
+                self._start_audio_level_monitoring()
                 
                 # Verify stream is working before playing sound
                 if not verify_and_play_sound():
@@ -1252,8 +1254,8 @@ class hyprwhsprApp:
                         self.is_recording = False
                     self._write_recording_status(False)
                     
-                    # Hide mic-osd visualization
-                    self._hide_mic_osd()
+                    self._stop_audio_level_monitoring()
+                    self._show_result_and_hide(False)
 
                     # Check if we know the microphone was disconnected
                     with self._mic_state_lock:
@@ -1269,8 +1271,8 @@ class hyprwhsprApp:
                         self.audio_ducker.restore()
                     return  # Don't attempt recovery during user-initiated recording
                 
-                # Stream is verified working - show mic-osd visualization
-                self._show_mic_osd()
+                # Stream is verified working - switch visualizer from starting to recording
+                self._show_mic_osd(state='recording')
                 
                 # Additional stability check - verify stream continues working
                 if not verify_stream_stable():
@@ -1280,8 +1282,8 @@ class hyprwhsprApp:
                         self.is_recording = False
                     self._write_recording_status(False)
                     
-                    # Hide mic-osd visualization
-                    self._hide_mic_osd()
+                    self._stop_audio_level_monitoring()
+                    self._show_result_and_hide(False)
 
                     # Check if we know the microphone was disconnected
                     with self._mic_state_lock:
@@ -1310,15 +1312,12 @@ class hyprwhsprApp:
                 if self.config.get_setting('audio_ducking', False):
                     self.audio_ducker.duck()
 
-                # Stream is working and stable - start monitoring
-                self._start_audio_level_monitoring()
-                    
             except (RuntimeError, Exception) as e:
                 print(f"[ERROR] Failed to start recording: {e}", flush=True)
 
-                # Clean up resources
-                self._hide_mic_osd()
+                # Clean up resources and briefly show the startup error state
                 self._stop_audio_level_monitoring()
+                self._show_result_and_hide(False)
 
                 # Close WebSocket if using realtime-ws backend
                 backend = normalize_backend(self.config.get_setting('transcription_backend', 'pywhispercpp'))
@@ -1346,9 +1345,9 @@ class hyprwhsprApp:
         except Exception as e:
             print(f"[ERROR] Failed to start recording: {e}", flush=True)
 
-            # Clean up resources
-            self._hide_mic_osd()
+            # Clean up resources and briefly show the startup error state
             self._stop_audio_level_monitoring()
+            self._show_result_and_hide(False)
 
             # Close WebSocket if using realtime-ws backend
             backend = normalize_backend(self.config.get_setting('transcription_backend', 'pywhispercpp'))
@@ -1719,15 +1718,12 @@ class hyprwhsprApp:
         except Exception:
             pass
 
-    def _show_mic_osd(self):
-        """Show mic-osd visualization overlay"""
-        # Cancel any pending delayed-hide from a previous recording's _show_result_and_hide
-        # so we don't hide the visualizer for this new recording
+    def _show_mic_osd(self, state: str = 'recording'):
+        """Show mic-osd visualization overlay."""
         with self._cancel_pending_hide_lock:
             self._cancel_pending_hide = True
         if self._mic_osd_runner and self._mic_osd_runner.is_available():
-            self._mic_osd_runner.set_state('recording')
-            self._mic_osd_runner.show()
+            self._mic_osd_runner.show(state=state)
 
     def _hide_mic_osd(self):
         """Hide mic-osd visualization overlay"""

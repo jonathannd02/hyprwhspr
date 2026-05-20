@@ -205,7 +205,7 @@ sys.exit(main())
             self._process = None
             return False
     
-    def show(self) -> bool:
+    def show(self, state: str = "recording") -> bool:
         """Show the mic-osd overlay (instant via signal)."""
         if not self.is_available():
             return False
@@ -214,6 +214,7 @@ sys.exit(main())
             return False
         
         try:
+            self.set_state(state)
             # For orphaned daemons, use the tracked PID
             pid = self._orphaned_daemon_pid if self._orphaned_daemon_pid is not None else self._process.pid
             os.kill(pid, signal.SIGUSR1)

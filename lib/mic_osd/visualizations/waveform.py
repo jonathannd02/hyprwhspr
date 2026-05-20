@@ -36,6 +36,7 @@ class WaveformVisualization(BaseVisualization):
         self.bar_heights = np.zeros(self.num_bars)
         self.decay_rate = 0.85  # How fast bars fall
         self.rise_rate = 0.5    # How fast bars rise
+        self.level_phase = 0.0
 
         # Animation for pulsing dot (legacy, now managed by StateManager)
         self.pulse_phase = 0.0
@@ -47,6 +48,34 @@ class WaveformVisualization(BaseVisualization):
         self._recording_start_time = None
         self._elapsed_seconds = 0.0
         self._show_elapsed_time = False
+
+    def _apply_bar_heights(self, new_heights: np.ndarray):
+        """Smooth new normalized bar heights into the current bar state."""
+        for i in range(self.num_bars):
+            if new_heights[i] > self.bar_heights[i]:
+                self.bar_heights[i] = (
+                    self.rise_rate * new_heights[i] +
+                    (1 - self.rise_rate) * self.bar_heights[i]
+                )
+            else:
+                self.bar_heights[i] *= self.decay_rate
+                if self.bar_heights[i] < new_heights[i]:
+                    self.bar_heights[i] = new_heights[i]
+
+    def _update_from_level(self, level: float):
+        """Create visible waveform motion from a recorder-owned scalar level."""
+        if level <= 0.001:
+            self.bar_heights *= self.decay_rate
+            return
+
+        self.level_phase += 0.35
+        new_heights = np.zeros(self.num_bars)
+        scaled_level = min(1.0, max(0.0, level) * 1.35)
+        for i in range(self.num_bars):
+            wave = 0.55 + 0.45 * math.sin(self.level_phase + i * 0.72)
+            texture = 0.85 + 0.15 * math.sin(self.level_phase * 0.37 + i * 1.91)
+            new_heights[i] = min(1.0, max(0.04, scaled_level * wave * texture))
+        self._apply_bar_heights(new_heights)
     
     def update(self, level: float, samples: np.ndarray = None):
         """Update with new audio samples."""
@@ -65,20 +94,10 @@ class WaveformVisualization(BaseVisualization):
                     # Use RMS of chunk for smoother visualization
                     rms = np.sqrt(np.mean(chunk ** 2))
                     new_heights[i] = min(1.0, rms * self.amplification)
-                
-                # Smooth transitions - rise fast, fall slow
-                for i in range(self.num_bars):
-                    if new_heights[i] > self.bar_heights[i]:
-                        # Rising - quick response
-                        self.bar_heights[i] = (
-                            self.rise_rate * new_heights[i] + 
-                            (1 - self.rise_rate) * self.bar_heights[i]
-                        )
-                    else:
-                        # Falling - slow decay
-                        self.bar_heights[i] *= self.decay_rate
-                        if self.bar_heights[i] < new_heights[i]:
-                            self.bar_heights[i] = new_heights[i]
+
+                self._apply_bar_heights(new_heights)
+        elif level > 0.001:
+            self._update_from_level(level)
         else:
             # No audio - decay all bars
             self.bar_heights *= self.decay_rate
@@ -115,7 +134,8 @@ class WaveformVisualization(BaseVisualization):
         
         # Check if we're in processing state for wave effect
         is_processing = self.state_manager.current_state == VisualizerState.PROCESSING
-        wave_phase = self.state_manager.animation_phase if is_processing else 0.0
+        is_starting = self.state_manager.current_state == VisualizerState.STARTING
+        wave_phase = self.state_manager.animation_phase if is_processing or is_starting else 0.0
         
         # Check if we're in success state for pulse effect
         is_success = self.state_manager.current_state == VisualizerState.SUCCESS
@@ -133,7 +153,7 @@ class WaveformVisualization(BaseVisualization):
             normalized_height = self.bar_heights[i]
             
             # Apply wave pattern during processing state
-            if is_processing:
+            if is_processing or is_starting:
                 # Clean, simple wave pattern: bars going up and down in a clear wave
                 # One full cycle across all bars for a clean, visible wave
                 wave_pos = (i / max(1, actual_num_bars - 1)) * 2 * math.pi + wave_phase
@@ -148,7 +168,7 @@ class WaveformVisualization(BaseVisualization):
                 # Add base height boost so wave reaches recording-level extremes
                 # This ensures bars get tall even without audio input during processing
                 # Boost to 70% of max as baseline, then apply wave modulation
-                base_height_boost = 0.7
+                base_height_boost = 0.7 if is_processing else 0.18
                 boosted_normalized = max(normalized_height, base_height_boost)
                 
                 # Apply wave modulation to the boosted height

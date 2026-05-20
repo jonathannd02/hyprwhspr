@@ -14,6 +14,7 @@ from ..theme import theme
 
 class VisualizerState(Enum):
     """States for the visualizer indicator."""
+    STARTING = "starting"        # Recording requested, stream not confirmed yet
     RECORDING = "recording"      # Pulsing red dot
     PAUSED = "paused"            # Static amber dot
     PROCESSING = "processing"    # Green wave animation
@@ -40,6 +41,7 @@ class StateManager:
     def set_state_from_string(self, state_str: str):
         """Set state from string value (for IPC)."""
         state_map = {
+            'starting': VisualizerState.STARTING,
             'recording': VisualizerState.RECORDING,
             'paused': VisualizerState.PAUSED,
             'processing': VisualizerState.PROCESSING,
@@ -58,6 +60,7 @@ class StateManager:
     def get_state_color(self) -> tuple:
         """Return the appropriate color for current state from theme."""
         color_map = {
+            VisualizerState.STARTING: theme.processing_dot,
             VisualizerState.RECORDING: theme.recording_dot,
             VisualizerState.PAUSED: theme.paused_dot,
             VisualizerState.PROCESSING: theme.processing_dot,
@@ -70,7 +73,10 @@ class StateManager:
         """Return 0-1 animation parameter based on state type."""
         elapsed = time.time() - self.state_changed_at
 
-        if self.current_state == VisualizerState.RECORDING:
+        if self.current_state == VisualizerState.STARTING:
+            return 0.55 + 0.25 * math.sin(self.animation_phase)
+
+        elif self.current_state == VisualizerState.RECORDING:
             # Gentle pulse: varies 0.7-1.0
             return 0.7 + 0.3 * math.sin(self.animation_phase)
 

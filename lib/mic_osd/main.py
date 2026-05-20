@@ -10,6 +10,7 @@ Supports two modes:
 import sys
 import signal
 import os
+import threading
 from pathlib import Path
 
 import gi
@@ -61,6 +62,8 @@ class MicOSD:
         self.visible = False
         self._position_generation = 0
         self._position_source_id = None
+        self._position_lookup_inflight = False
+        self._position_lookup_lock = threading.Lock()
         self.theme_watcher = None
         self._should_stop = False
         self._use_file_audio = daemon
@@ -304,45 +307,74 @@ class MicOSD:
             except Exception:
                 pass
             self._position_source_id = None
+            with self._position_lookup_lock:
+                self._position_lookup_inflight = False
 
     def _schedule_position_update(self):
         self._cancel_pending_position_update()
         generation = self._position_generation
-
-        def apply_later():
-            self._position_source_id = None
-            if not self.visible or not self.window or generation != self._position_generation:
-                return False
-            self._apply_position(generation=generation)
-            return False
-
-        self._position_source_id = GLib.timeout_add(1, apply_later)
-
-    def _apply_position(self, generation=None):
-        """Position above focused caret when available, otherwise reset to fixed fallback."""
         if not self.window:
             return
 
         try:
             screen_width, screen_height = self.window.get_primary_monitor_size()
-            caret = get_focused_caret_rect()
-            if (
-                generation is not None
-                and (not self.visible or generation != self._position_generation)
-            ):
+        except Exception as e:
+            print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
+            try:
+                self.window.reset_layer_position()
+            except Exception:
+                pass
+            return
+
+        with self._position_lookup_lock:
+            if self._position_lookup_inflight:
+                # A wedged AT-SPI lookup must not stack more workers. Keep fallback.
                 return
-            position = compute_osd_position(
-                caret,
-                screen_width=screen_width,
-                screen_height=screen_height,
-                osd_width=self.width,
-                osd_height=self.height,
-            )
-            if (
-                generation is not None
-                and (not self.visible or generation != self._position_generation)
-            ):
-                return
+            self._position_lookup_inflight = True
+
+        osd_width = self.width
+        osd_height = self.height
+
+        def lookup_position():
+            position = None
+            try:
+                caret = get_focused_caret_rect()
+                position = compute_osd_position(
+                    caret,
+                    screen_width=screen_width,
+                    screen_height=screen_height,
+                    osd_width=osd_width,
+                    osd_height=osd_height,
+                )
+            except Exception as e:
+                print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
+
+            def apply_result():
+                self._position_source_id = None
+                with self._position_lookup_lock:
+                    self._position_lookup_inflight = False
+                self._apply_position_result(position, generation)
+                return False
+
+            try:
+                self._position_source_id = GLib.idle_add(apply_result)
+            except Exception:
+                with self._position_lookup_lock:
+                    self._position_lookup_inflight = False
+
+        try:
+            threading.Thread(target=lookup_position, daemon=True).start()
+        except Exception as e:
+            print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
+            with self._position_lookup_lock:
+                self._position_lookup_inflight = False
+
+    def _apply_position_result(self, position, generation):
+        """Apply a completed caret lookup result on the GTK main thread."""
+        if not self.window or not self.visible or generation != self._position_generation:
+            return
+
+        try:
             if position is None:
                 self.window.reset_layer_position()
             else:

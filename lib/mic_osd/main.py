@@ -59,6 +59,8 @@ class MicOSD:
         self._last_visualizer_state = None
         self.daemon = daemon
         self.visible = False
+        self._position_generation = 0
+        self._position_source_id = None
         self.theme_watcher = None
         self._should_stop = False
         self._use_file_audio = daemon
@@ -106,6 +108,7 @@ class MicOSD:
             if self._auto_hide_timeout_id:
                 GLib.source_remove(self._auto_hide_timeout_id)
                 self._auto_hide_timeout_id = None
+            self._cancel_pending_position_update()
             if self.audio_monitor:
                 self.audio_monitor.stop()
                 self.audio_monitor = None
@@ -184,8 +187,13 @@ class MicOSD:
             return
 
         self.visible = True
-        self._apply_position()
+        self._position_generation += 1
+        try:
+            self.window.reset_layer_position()
+        except Exception:
+            pass
         self.window.set_visible(True)
+        self._schedule_position_update()
 
         # Start audio monitoring
         if not self._use_file_audio:
@@ -227,6 +235,8 @@ class MicOSD:
         
         try:
             self.visible = False
+            self._position_generation += 1
+            self._cancel_pending_position_update()
             self.window.reset_layer_position()
             self.window.set_visible(False)
             
@@ -253,6 +263,8 @@ class MicOSD:
             # Ensure window is hidden even if exceptions occur
             print(f"[MIC-OSD] Error in _hide(): {e}", flush=True)
             self.visible = False
+            self._position_generation += 1
+            self._cancel_pending_position_update()
             if self.window:
                 try:
                     self.window.set_visible(False)
@@ -285,7 +297,28 @@ class MicOSD:
                     pass
                 self.audio_monitor = None
 
-    def _apply_position(self):
+    def _cancel_pending_position_update(self):
+        if self._position_source_id:
+            try:
+                GLib.source_remove(self._position_source_id)
+            except Exception:
+                pass
+            self._position_source_id = None
+
+    def _schedule_position_update(self):
+        self._cancel_pending_position_update()
+        generation = self._position_generation
+
+        def apply_later():
+            self._position_source_id = None
+            if not self.visible or not self.window or generation != self._position_generation:
+                return False
+            self._apply_position(generation=generation)
+            return False
+
+        self._position_source_id = GLib.timeout_add(1, apply_later)
+
+    def _apply_position(self, generation=None):
         """Position above focused caret when available, otherwise reset to fixed fallback."""
         if not self.window:
             return
@@ -293,6 +326,11 @@ class MicOSD:
         try:
             screen_width, screen_height = self.window.get_primary_monitor_size()
             caret = get_focused_caret_rect()
+            if (
+                generation is not None
+                and (not self.visible or generation != self._position_generation)
+            ):
+                return
             position = compute_osd_position(
                 caret,
                 screen_width=screen_width,
@@ -300,6 +338,11 @@ class MicOSD:
                 osd_width=self.width,
                 osd_height=self.height,
             )
+            if (
+                generation is not None
+                and (not self.visible or generation != self._position_generation)
+            ):
+                return
             if position is None:
                 self.window.reset_layer_position()
             else:
@@ -307,7 +350,8 @@ class MicOSD:
         except Exception as e:
             print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
             try:
-                self.window.reset_layer_position()
+                if generation is None or (self.visible and generation == self._position_generation):
+                    self.window.reset_layer_position()
             except Exception:
                 pass
     
@@ -411,6 +455,9 @@ class MicOSD:
         if self._auto_hide_timeout_id:
             GLib.source_remove(self._auto_hide_timeout_id)
             self._auto_hide_timeout_id = None
+
+        self._cancel_pending_position_update()
+        self._position_generation += 1
 
         if self.audio_monitor:
             self.audio_monitor.stop()

@@ -867,6 +867,7 @@ class hyprwhsprApp:
             if self._longform_state in ('RECORDING', 'PAUSED'):
                 # Stop recording if active, then submit
                 if self._longform_state == 'RECORDING':
+                    self._stop_audio_level_monitoring()
                     # Save current segment first
                     audio_data = self.audio_capture.pause_recording()
                     if audio_data is not None and len(audio_data) > 0:
@@ -904,6 +905,8 @@ class hyprwhsprApp:
         self._longform_state = 'RECORDING'
         self._write_longform_state('RECORDING')
 
+        self._start_longform_audio_level_monitoring()
+
         # Show OSD in recording state
         self._set_visualizer_state('recording')
         self._show_mic_osd()
@@ -923,6 +926,7 @@ class hyprwhsprApp:
 
         # Get audio data and stop stream
         audio_data = self.audio_capture.pause_recording()
+        self._stop_audio_level_monitoring()
 
         # Save segment to disk
         if audio_data is not None and len(audio_data) > 0:
@@ -952,6 +956,8 @@ class hyprwhsprApp:
         self._longform_state = 'RECORDING'
         self._write_longform_state('RECORDING')
 
+        self._start_longform_audio_level_monitoring()
+
         # Update visualizer to recording state
         self._set_visualizer_state('recording')
 
@@ -971,6 +977,7 @@ class hyprwhsprApp:
 
         try:
             self._stop_longform_auto_save_timer()
+            self._stop_audio_level_monitoring()
             self.audio_capture.stop_recording()
             self._longform_segment_manager.clear_session()
             self._longform_error_audio = None
@@ -996,6 +1003,7 @@ class hyprwhsprApp:
 
         # Stop auto-save timer if running
         self._stop_longform_auto_save_timer()
+        self._stop_audio_level_monitoring()
 
         # Get audio data
         if retry and self._longform_error_audio is not None:
@@ -1090,6 +1098,13 @@ class hyprwhsprApp:
         self._longform_auto_save_timer = threading.Timer(interval, auto_save_callback)
         self._longform_auto_save_timer.daemon = True
         self._longform_auto_save_timer.start()
+
+    def _start_longform_audio_level_monitoring(self):
+        """Start recorder-owned level updates for long-form recording."""
+        self._start_audio_level_monitoring(
+            active_predicate=lambda: self._longform_state == 'RECORDING',
+            detect_muted=False,
+        )
 
     def _stop_longform_auto_save_timer(self):
         """Stop the auto-save timer"""
@@ -1810,12 +1825,14 @@ class hyprwhsprApp:
         except Exception as e:
             print(f"[WARN] Failed to clear error signals: {e}", flush=True)
 
-    def _start_audio_level_monitoring(self):
+    def _start_audio_level_monitoring(self, active_predicate=None, detect_muted=True):
         """Start monitoring and writing audio levels to file"""
         # Stop any lingering thread from a previous recording before starting a new one
         self._stop_audio_level_monitoring()
 
         self._audio_level_stop.clear()
+        if active_predicate is None:
+            active_predicate = lambda: self.is_recording
 
         def monitor_audio_level():
             AUDIO_LEVEL_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1828,7 +1845,7 @@ class hyprwhsprApp:
             total_samples = 0
 
             try:
-                while self.is_recording and not self._audio_level_stop.is_set():
+                while active_predicate() and not self._audio_level_stop.is_set():
                     try:
                         # Get scaled level for visualization (0.0-1.0)
                         level = self.audio_capture.get_audio_level()
@@ -1838,7 +1855,7 @@ class hyprwhsprApp:
                         total_samples += 1
 
                         # Mute detection (only if enabled, after grace period)
-                        if self.config.get_setting('mute_detection', True) and total_samples > grace_samples:
+                        if detect_muted and self.config.get_setting('mute_detection', True) and total_samples > grace_samples:
                             # get_audio_level() scales by 10x, so we need raw value for accurate detection
                             raw_level = self.audio_capture.current_level
                             if raw_level < zero_threshold:
@@ -1885,6 +1902,11 @@ class hyprwhsprApp:
             # race against this thread's finally block on AUDIO_LEVEL_FILE.
         else:
             self.audio_level_thread = None
+            try:
+                if AUDIO_LEVEL_FILE.exists():
+                    AUDIO_LEVEL_FILE.unlink()
+            except Exception:
+                pass
 
     def _setup_recording_control_fifo(self):
         """Create named pipe (FIFO) for immediate recording control"""

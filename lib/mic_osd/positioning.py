@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import threading
+import time
 from typing import Optional, Tuple
 
 
@@ -106,12 +107,26 @@ def _load_atspi(timeout: float = 0.5):
     return _ATSPI_MODULE
 
 
-def _find_focused_text_accessible(Atspi):
+def _deadline_expired(deadline: float) -> bool:
+    return time.monotonic() >= deadline
+
+
+def _remaining_time(deadline: float) -> float:
+    return max(0.0, deadline - time.monotonic())
+
+
+def _find_focused_text_accessible(Atspi, deadline: float):
     stack = []
     try:
+        if _deadline_expired(deadline):
+            return None
         desktop = Atspi.get_desktop(0)
+        if _deadline_expired(deadline):
+            return None
         child_count = desktop.get_child_count()
         for i in range(child_count):
+            if _deadline_expired(deadline):
+                return None
             child = desktop.get_child_at_index(i)
             if child is not None:
                 stack.append((child, 0))
@@ -119,11 +134,19 @@ def _find_focused_text_accessible(Atspi):
         return None
 
     while stack:
+        if _deadline_expired(deadline):
+            return None
         accessible, depth = stack.pop()
         try:
             states = accessible.get_state_set()
+            if _deadline_expired(deadline):
+                return None
             if states and states.contains(Atspi.StateType.FOCUSED):
+                if _deadline_expired(deadline):
+                    return None
                 text_iface = accessible.get_text_iface()
+                if _deadline_expired(deadline):
+                    return None
                 if text_iface is not None:
                     return text_iface
         except Exception:
@@ -133,10 +156,14 @@ def _find_focused_text_accessible(Atspi):
             continue
 
         try:
+            if _deadline_expired(deadline):
+                return None
             child_count = accessible.get_child_count()
         except Exception:
             continue
         for index in range(child_count - 1, -1, -1):
+            if _deadline_expired(deadline):
+                return None
             try:
                 child = accessible.get_child_at_index(index)
             except Exception:
@@ -149,21 +176,35 @@ def _find_focused_text_accessible(Atspi):
 
 def get_focused_caret_rect(timeout: float = 0.5) -> Optional[CaretRect]:
     """Return focused caret bounds from AT-SPI, or None when unavailable."""
+    timeout = max(0.0, timeout)
+    deadline = time.monotonic() + timeout
     if not _ATSPI_LOCK.acquire(timeout=timeout):
         return None
     try:
-        Atspi = _load_atspi(timeout=timeout)
+        if _deadline_expired(deadline):
+            return None
+
+        Atspi = _load_atspi(timeout=_remaining_time(deadline))
         if Atspi is None:
             return None
 
-        text_iface = _find_focused_text_accessible(Atspi)
+        if _deadline_expired(deadline):
+            return None
+
+        text_iface = _find_focused_text_accessible(Atspi, deadline)
         if text_iface is None:
             return None
 
+        if _deadline_expired(deadline):
+            return None
         offset = text_iface.get_caret_offset()
+        if _deadline_expired(deadline):
+            return None
         if offset < 0:
             return None
         rect = text_iface.get_character_extents(offset, Atspi.CoordType.SCREEN)
+        if _deadline_expired(deadline):
+            return None
         return CaretRect(
             x=float(rect.x),
             y=float(rect.y),

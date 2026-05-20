@@ -1,10 +1,13 @@
 import sys
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
+from mic_osd import positioning
 from mic_osd.positioning import CaretRect, compute_osd_position
 
 
@@ -106,6 +109,41 @@ class OSDPositioningTests(unittest.TestCase):
                 osd_height=40,
             )
         )
+
+    def test_get_focused_caret_rect_honors_timeout_during_tree_walk(self):
+        class FakeStateSet:
+            def contains(self, _state):
+                return False
+
+        class FakeAccessible:
+            def __init__(self, children=None):
+                self.children = children or []
+
+            def get_state_set(self):
+                time.sleep(0.002)
+                return FakeStateSet()
+
+            def get_child_count(self):
+                return len(self.children)
+
+            def get_child_at_index(self, index):
+                return self.children[index]
+
+        class FakeAtspi:
+            class StateType:
+                FOCUSED = object()
+
+            @staticmethod
+            def get_desktop(_index):
+                return FakeAccessible([FakeAccessible() for _ in range(100)])
+
+        with mock.patch.object(positioning, "_load_atspi", return_value=FakeAtspi):
+            start = time.monotonic()
+            caret = positioning.get_focused_caret_rect(timeout=0.01)
+            elapsed = time.monotonic() - start
+
+        self.assertIsNone(caret)
+        self.assertLess(elapsed, 0.08)
 
 
 if __name__ == "__main__":

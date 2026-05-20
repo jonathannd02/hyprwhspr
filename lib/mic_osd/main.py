@@ -25,19 +25,22 @@ from .window import OSDWindow, load_css
 from .audio import AudioMonitor
 from .visualizations import VISUALIZATIONS
 from .theme import ThemeWatcher
+from .level_source import read_audio_level
+from .positioning import compute_osd_position, get_focused_caret_rect
 
 # Import paths with fallback for daemon context
 try:
-    from ..src.paths import RECORDING_STATUS_FILE, VISUALIZER_STATE_FILE
+    from ..src.paths import RECORDING_STATUS_FILE, VISUALIZER_STATE_FILE, AUDIO_LEVEL_FILE
 except ImportError:
     try:
-        from src.paths import RECORDING_STATUS_FILE, VISUALIZER_STATE_FILE
+        from src.paths import RECORDING_STATUS_FILE, VISUALIZER_STATE_FILE, AUDIO_LEVEL_FILE
     except ImportError:
         # Fallback: construct paths manually if imports fail
         home = Path.home()
         xdg_config = Path(os.environ.get('XDG_CONFIG_HOME', home / '.config'))
         RECORDING_STATUS_FILE = xdg_config / 'hyprwhspr' / 'recording_status'
         VISUALIZER_STATE_FILE = xdg_config / 'hyprwhspr' / 'visualizer_state'
+        AUDIO_LEVEL_FILE = xdg_config / 'hyprwhspr' / 'audio_level'
 
 
 class MicOSD:
@@ -58,6 +61,7 @@ class MicOSD:
         self.visible = False
         self.theme_watcher = None
         self._should_stop = False
+        self._use_file_audio = daemon
 
         # Get visualization
         viz_class = VISUALIZATIONS.get(visualization, VISUALIZATIONS["waveform"])
@@ -180,20 +184,22 @@ class MicOSD:
             return
 
         self.visible = True
+        self._apply_position()
         self.window.set_visible(True)
 
         # Start audio monitoring
-        if not self.audio_monitor:
-            self.audio_monitor = AudioMonitor(samplerate=44100, blocksize=1024)
+        if not self._use_file_audio:
+            if not self.audio_monitor:
+                self.audio_monitor = AudioMonitor(samplerate=44100, blocksize=1024)
 
-        try:
-            self.audio_monitor.start()
-        except RuntimeError as e:
-            # Audio monitoring failed (e.g., mic unavailable)
-            # Keep window visible (show flat line) — the main hyprwhspr process
-            # already verified audio before signaling us to show.
-            print(f"[MIC-OSD] Audio monitoring unavailable, showing without waveform: {e}", flush=True)
-            self.audio_monitor = None
+            try:
+                self.audio_monitor.start()
+            except RuntimeError as e:
+                # Audio monitoring failed (e.g., mic unavailable)
+                # Keep window visible (show flat line) — the main hyprwhspr process
+                # already verified audio before signaling us to show.
+                print(f"[MIC-OSD] Audio monitoring unavailable, showing without waveform: {e}", flush=True)
+                self.audio_monitor = None
 
         # Start update timer (60 FPS)
         if not self.update_timer_id:
@@ -221,6 +227,7 @@ class MicOSD:
         
         try:
             self.visible = False
+            self.window.reset_layer_position()
             self.window.set_visible(False)
             
             # Stop update timer
@@ -277,14 +284,49 @@ class MicOSD:
                 except Exception:
                     pass
                 self.audio_monitor = None
+
+    def _apply_position(self):
+        """Position above focused caret when available, otherwise reset to fixed fallback."""
+        if not self.window:
+            return
+
+        try:
+            screen_width, screen_height = self.window.get_primary_monitor_size()
+            caret = get_focused_caret_rect()
+            position = compute_osd_position(
+                caret,
+                screen_width=screen_width,
+                screen_height=screen_height,
+                osd_width=self.width,
+                osd_height=self.height,
+            )
+            if position is None:
+                self.window.reset_layer_position()
+            else:
+                self.window.set_layer_position(*position)
+        except Exception as e:
+            print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
+            try:
+                self.window.reset_layer_position()
+            except Exception:
+                pass
     
     def _update(self):
         """Update visualization with current audio data."""
-        if self.audio_monitor and self.window and self.visible:
+        if not self.window or not self.visible:
+            return True
+
+        if self._use_file_audio:
+            level = read_audio_level(AUDIO_LEVEL_FILE, max_age_seconds=1.0)
+            self.window.update(0.0 if level is None else level, None)
+            return True
+
+        if self.audio_monitor:
             level = self.audio_monitor.get_level()
             samples = self.audio_monitor.get_samples()
             self.window.update(level, samples)
-        return True  # Continue timer
+
+        return True
 
     def _poll_state_file(self):
         """Poll the visualizer state file and update visualization state."""

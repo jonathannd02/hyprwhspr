@@ -43,6 +43,8 @@ class OSDWindow(Gtk.Window):
         self.visualization = visualization
         self._width = width
         self._height = height
+        self._fixed_top = 10
+        self._fixed_left = 10
         
         # Layer shell MUST be initialized immediately after window creation
         # and BEFORE any other window configuration
@@ -71,8 +73,8 @@ class OSDWindow(Gtk.Window):
         Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
 
         # Margin from top-left corner
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 10)
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 10)
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, self._fixed_top)
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, self._fixed_left)
         
         # Don't reserve exclusive space
         Gtk4LayerShell.set_exclusive_zone(self, -1)
@@ -128,6 +130,32 @@ class OSDWindow(Gtk.Window):
         """Change the visualization type."""
         self.visualization = visualization
         self.drawing_area.queue_draw()
+
+    def set_layer_position(self, x: int | None, y: int | None):
+        """Move the layer-shell surface, or reset to fixed fallback when None."""
+        if not LAYER_SHELL_AVAILABLE:
+            return
+
+        left = self._fixed_left if x is None else max(0, int(x))
+        top = self._fixed_top if y is None else max(0, int(y))
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, left)
+        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, top)
+
+    def reset_layer_position(self):
+        """Return the OSD to its fixed fallback position."""
+        self.set_layer_position(None, None)
+
+    def get_primary_monitor_size(self):
+        """Return primary monitor size for position validation."""
+        display = Gdk.Display.get_default()
+        if display is None:
+            return (0, 0)
+        monitors = display.get_monitors()
+        monitor = monitors.get_item(0) if monitors is not None and monitors.get_n_items() > 0 else None
+        if monitor is None:
+            return (0, 0)
+        geometry = monitor.get_geometry()
+        return (geometry.width, geometry.height)
     
     def make_click_through(self):
         """

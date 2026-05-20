@@ -27,7 +27,11 @@ from .audio import AudioMonitor
 from .visualizations import VISUALIZATIONS
 from .theme import ThemeWatcher
 from .level_source import read_audio_level
-from .positioning import compute_osd_position, get_focused_caret_rect
+from .positioning import (
+    MonitorGeometry,
+    compute_osd_position_for_monitors,
+    get_focused_caret_rect,
+)
 
 # Import paths with fallback for daemon context
 try:
@@ -317,7 +321,11 @@ class MicOSD:
             return
 
         try:
-            screen_width, screen_height = self.window.get_primary_monitor_size()
+            if hasattr(self.window, "get_monitor_geometries"):
+                monitors = self.window.get_monitor_geometries()
+            else:
+                screen_width, screen_height = self.window.get_primary_monitor_size()
+                monitors = [MonitorGeometry(x=0, y=0, width=screen_width, height=screen_height)]
         except Exception as e:
             print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
             try:
@@ -339,10 +347,9 @@ class MicOSD:
             position = None
             try:
                 caret = get_focused_caret_rect()
-                position = compute_osd_position(
+                position = compute_osd_position_for_monitors(
                     caret,
-                    screen_width=screen_width,
-                    screen_height=screen_height,
+                    monitors=monitors,
                     osd_width=osd_width,
                     osd_height=osd_height,
                 )
@@ -378,7 +385,8 @@ class MicOSD:
             if position is None:
                 self.window.reset_layer_position()
             else:
-                self.window.set_layer_position(*position)
+                monitor_index, x, y = position
+                self.window.set_layer_position(x, y, monitor_index=monitor_index)
         except Exception as e:
             print(f"[MIC-OSD] Positioning fallback: {e}", flush=True)
             try:

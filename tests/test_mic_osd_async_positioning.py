@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
 from mic_osd import main as osd_main
+from mic_osd.positioning import CaretRect, MonitorGeometry
 
 
 class DummyWindow:
@@ -26,8 +27,14 @@ class DummyWindow:
     def get_primary_monitor_size(self):
         return (1920, 1080)
 
-    def set_layer_position(self, x, y):
-        self.layer_positions.append((x, y))
+    def get_monitor_geometries(self):
+        return [
+            MonitorGeometry(x=0, y=0, width=1920, height=1080),
+            MonitorGeometry(x=1920, y=0, width=1920, height=1080),
+        ]
+
+    def set_layer_position(self, x, y, monitor_index=None):
+        self.layer_positions.append((x, y, monitor_index))
 
 
 def make_osd():
@@ -92,6 +99,28 @@ class MicOSDAsyncPositioningTests(unittest.TestCase):
 
             release_lookup.set()
             self.assertTrue(idle_added.wait(timeout=0.5))
+
+    def test_global_caret_position_is_applied_on_matching_monitor(self):
+        osd = make_osd()
+
+        with (
+            mock.patch.object(osd_main.GLib, "timeout_add", return_value=101),
+            mock.patch.object(osd_main.GLib, "timeout_add_seconds", return_value=102),
+            mock.patch.object(osd_main.GLib, "source_remove"),
+            mock.patch.object(osd_main.GLib, "idle_add", side_effect=lambda callback: callback()),
+            mock.patch.object(
+                osd_main,
+                "get_focused_caret_rect",
+                return_value=CaretRect(x=2500, y=500, width=2, height=20),
+            ),
+        ):
+            osd._show()
+
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline and not osd.window.layer_positions:
+                time.sleep(0.01)
+
+        self.assertEqual(osd.window.layer_positions, [(481, 452, 1)])
 
 
 if __name__ == "__main__":

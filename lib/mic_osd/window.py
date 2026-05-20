@@ -20,6 +20,8 @@ from gi.repository import Gtk, Gdk, GLib
 if LAYER_SHELL_AVAILABLE:
     from gi.repository import Gtk4LayerShell
 
+from .positioning import MonitorGeometry
+
 
 class OSDWindow(Gtk.Window):
     """
@@ -131,10 +133,18 @@ class OSDWindow(Gtk.Window):
         self.visualization = visualization
         self.drawing_area.queue_draw()
 
-    def set_layer_position(self, x: int | None, y: int | None):
+    def set_layer_position(self, x: int | None, y: int | None, monitor_index: int | None = None):
         """Move the layer-shell surface, or reset to fixed fallback when None."""
         if not LAYER_SHELL_AVAILABLE:
             return
+
+        if monitor_index is not None:
+            display = Gdk.Display.get_default()
+            monitors = display.get_monitors() if display is not None else None
+            if monitors is not None and 0 <= monitor_index < monitors.get_n_items():
+                monitor = monitors.get_item(monitor_index)
+                if monitor is not None:
+                    Gtk4LayerShell.set_monitor(self, monitor)
 
         left = self._fixed_left if x is None else max(0, int(x))
         top = self._fixed_top if y is None else max(0, int(y))
@@ -156,6 +166,31 @@ class OSDWindow(Gtk.Window):
             return (0, 0)
         geometry = monitor.get_geometry()
         return (geometry.width, geometry.height)
+
+    def get_monitor_geometries(self):
+        """Return screen-space monitor geometries in GDK monitor order."""
+        display = Gdk.Display.get_default()
+        if display is None:
+            return []
+        monitors = display.get_monitors()
+        if monitors is None:
+            return []
+
+        geometries = []
+        for index in range(monitors.get_n_items()):
+            monitor = monitors.get_item(index)
+            if monitor is None:
+                continue
+            geometry = monitor.get_geometry()
+            geometries.append(
+                MonitorGeometry(
+                    x=geometry.x,
+                    y=geometry.y,
+                    width=geometry.width,
+                    height=geometry.height,
+                )
+            )
+        return geometries
     
     def make_click_through(self):
         """

@@ -16,6 +16,7 @@ ENV/
 # Whisper.cpp (cloned during installation)
 whisper.cpp/
 .worktrees/
+.superpowers/
 
 # Models (downloaded during installation)
 models/
